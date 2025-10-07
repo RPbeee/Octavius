@@ -1,0 +1,148 @@
+[MemMap]
+-------
+0x0000--0x00ff  Interrupt vector
+-------
+0x0100--0x0fff  Interrupt Handler
+-------
+0x1000--0x7bff  Free
+-------
+0x7c00--0x7dff  Bootsector loading point
+-------
+0x7e00--0xfaff  Free
+-------
+0xfb00--0xfeff  Video RAM 64x16 (1024Byte)
+-------
+0xff00--0xffff  Bootloaderloader
+-------
+
+    ip   = 0x0 // Program Counter
+	ax   = 0x1
+	bx   = 0x2
+	cx   = 0x3
+	dx   = 0x4
+	bp   = 0x5
+	sp   = 0x6
+	cs   = 0x7
+	ss   = 0x8
+	ds   = 0x9
+	di   = 0xa
+	flag = 0xb
+
+[FLAGS]
+0:Zero
+1:Carry
+2:Overflow
+3:Sign
+4:Interrupt OK
+5:
+6:
+7:NULL
+
+
+1:MOV
+    MOV Dest Source [NULL/DATA/ADDR]
+    8bit addressing
+        00~0b   registers
+        0c      memory  =>  DataSegment*256+BX
+        mem[uint(reg[ds])*0x100+uint(reg[bx])]
+        0d      memory  =>  StackSegment*256+BasePointer
+        mem[uint(reg[ss])*0x100+uint(reg[bp])]
+        0e      memory  =>  DataSegment*256+4th byte
+        mem[uint(reg[ds])*0x100+uint(inst[3])]
+        0f      immediate data(Source only)
+        10~ef   [free]
+        f0      Mem[Immd1*256+Immd2]
+        f1      Mem[Immd1*256+Immd2]:Mem[Immd1*256+Immd2+1]
+        10~1b   registers(Segment:Address)
+        20~2b   reg+imm(Segreg+Addrimm)
+
+2:ADD
+    ADD Source [NULL/DATA/ADDR] [NULL]
+    Carry flag up on carry.
+
+3:NOT
+    NOT Source [NULL/DATA/ADDR] [NULL]
+
+4:OR
+    OR SourceA SourceB [NULL/DATA/ADDR]
+    !Max 1 Immd only!
+    SourceA <= SourceA OR SourceB
+
+5:AND
+    same with OR
+
+6:XOR
+    same with OR
+
+7:SHL
+    SHL Source Shift-Num [NULL/ADDR]
+
+8:SHR
+    SHR Source Shift-Num [NULL/ADDR]
+
+9:ROL
+    ROL Source Roll-Num [NULL/ADDR]
+
+a:ROR
+    ROR Source Roll-Num [NULL/ADDR]
+
+b:PUSH
+PUSH Source [ADDR/DATA] [NULL]
+c:POP
+POP Dest [ADDR] [NULL]
+
+d:CMP
+CMP Source1 [Source2/ADDR/IMMD] [IMMD]
+
+
+
+e:JMP
+    JMP Mode+Source [NULL/ADDR/OFFSET/SEGMENT/IMMDADDR/REGISTER2] [NULL/IMMDADDR]
+    [Mode4bit]+[Source4bit]
+    0x0f:       Segment=Now,        Address=IP+Immediate(as+-)
+    0x1f:       Segment=Now,        Address=Immediate
+    0x2f:       Segment=Immediate,  Address=Immediate
+
+    0x01-0x0b   Segment=Now,        Address=Register
+
+    0x0c        Segment=Now,                    Address=Mem[DS*256+BX]
+    0x1c        Segment=Mem[DS*256+BX+1],       Address=Mem[DS*256+BX]
+    0x0d        Segment=Now,                    Address=Mem[SS*256+BP]
+    0x1d        Segment=Mem[SS*256+BP+1],       Address=Mem[SS*256+BP]
+    0x0e        Segment=Now,                    Address=Mem[DS*256+Immd]
+    0x1e        Segment=Mem[DS*256+Immd+1]      Address=Mem[DS*256+Immd]
+    0xf0        Segment=Now,                    Address=Mem[Immd1*256+Immd2]
+    0xf1        Segment=Mem[Immd1*256+Immd2+1]  Address=Mem[Immd1*256+Immd2]
+
+0x0f-0x14 JUMPS
+JZ [OFFSET(+-)]
+Jumps to CS:IP+OFFSET if Zero flag is 1
+
+0x15:INC
+INC Source [NULL/ADDR] [NULL]
+
+0x16:IN
+IN Dest [Register/IOPort]
+
+IOPorts:
+    0x00-0x0b   NULL
+    0x0c    KEYB    CHAR
+    0x0d    KEYB    BUFFER NUM
+    0x10    FLOPPY  CMD
+    0x11    FLOPPY  ARG
+    0x12    FLOPPY  DATA
+    0x13    FLOPPY  STATS
+
+0x17:OUT
+OUT [Register/IOPort] [Source]
+
+0x18:JC
+0x19:JNC
+0x20:CALL
+CALL Source1 [Source2/Segment/ADDR] [ADDR]
+
+0x21:RET
+RET [near, far]
+
+0x22:IRET
+IRET [NULL] [NULL] [NULL]
