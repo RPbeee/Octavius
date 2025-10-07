@@ -90,8 +90,8 @@ func main() {
 			fmt.Sprintln("時刻:", now.Format("15:04:05")),
 			fmt.Sprintf("現在の実参照アドレス:%x\n", (uint(reg[cs])*0x100 + uint(reg[ip]))),
 			fmt.Sprintf("レジスタ:%b\n", reg),
-			fmt.Sprintln("メモリ:", mem[uint(reg[cs])*0x100:uint(reg[cs])*0x100+256]),
-			fmt.Sprintln("VRAM:", mem[uint(0xfb)*0x100+0:uint(0xfb)*0x100+256]),
+			fmt.Sprintln("メモリ:", mem[uint16(reg[cs])*0x100:uint(reg[cs])*0x100+256]),
+			fmt.Sprintln("VRAM:", mem[uint16(0xfb)*0x100+0:uint(0xfb)*0x100+256]),
 			//fmt.Sprintf("キーバッファ:%d", len(keybuff)),
 			//fmt.Sprintf("SS:0x%x SP:0x%x", reg[ss], reg[sp]),
 			//fmt.Sprintf("0xfeff:0x%x BX:%x", mem[0xfeff], reg[bx]),
@@ -215,7 +215,7 @@ func reset() { //Resets all the data
 		0x01, 0x0b, 0x01, 0x00, //Clear Registers
 		0x0e, 0x2f, 0x7c, 0x00, //Jump to 0x7c00
 	})
-	/*copy(mem[uint(InstLength)*0xff00/0x04:], []uint8{
+	/*copy(mem[uint16(InstLength)*0xff00/0x04:], []uint8{
 		0x01, 0x0a, 0x0f, 0x02,	//floppy write test
 		0x01, 0x04, 0x0f, 0x80,
 		0x17, 0x10, 0x0a, 0x00,
@@ -253,52 +253,53 @@ func decode(inst []uint8) {
 			case inst[2] < 0x0c:
 				reg[inst[1]] = reg[inst[2]]
 			case inst[2] == 0x0c:
-				reg[inst[1]] = mem[uint(reg[ds])*0x100+uint(reg[bx])]
+				reg[inst[1]] = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
 			case inst[2] == 0x0d:
-				reg[inst[1]] = mem[uint(reg[ss])*0x100+uint(reg[bp])]
+				reg[inst[1]] = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
 			case inst[2] == 0x0e:
-				reg[inst[1]] = mem[uint(reg[ds])*0x100+uint(inst[3])]
+				reg[inst[1]] = readMemory(uint16(reg[ds])*0x100+uint16(inst[3]), 1)[0]
 			case inst[2] == 0x0f:
 				reg[inst[1]] = inst[3]
 			case 0x10 <= inst[2] && inst[2] < 0x1c:
 				if 0x10 <= inst[3] && inst[3] < 0x1c {
-					reg[inst[1]] = mem[uint(reg[inst[2]-0x10])*0x100+uint(reg[inst[3]-0x10])]
+					reg[inst[1]] = readMemory(uint16(reg[inst[2]-0x10])*0x100+uint16(reg[inst[3]-0x10]), 1)[0]
 				}
 			case 0x20 <= inst[2] && inst[2] < 0x2c:
-				reg[inst[1]] = mem[uint(reg[inst[2]-0x20])*0x100+uint(inst[3])]
+				reg[inst[1]] = readMemory(uint16(reg[inst[2]-0x20])*0x100+uint16(inst[3]), 1)[0]
 			}
 		case inst[1] == 0x0c:
 			// to MEM
 			switch {
 			case inst[2] < 0x0c:
-				mem[uint(reg[ds])*0x100+uint(reg[bx])] = reg[inst[2]]
+				// mem[uint16(reg[ds])*0x100+uint16(reg[bx])] = reg[inst[2]]
+				writeMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), []uint8{reg[inst[2]]})
 			case inst[2] == 0x0f:
-				mem[uint(reg[ds])*0x100+uint(reg[bx])] = inst[3]
+				writeMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), []uint8{inst[3]})
 			}
 		case inst[1] == 0x0d:
 			// to MEM (stack)
 			switch {
 			case inst[2] < 0x0c:
-				mem[uint(reg[ss])*0x100+uint(reg[bp])] = reg[inst[2]]
+				writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{reg[inst[2]]})
 			case inst[2] == 0x0f:
-				mem[uint(reg[ss])*0x100+uint(reg[bp])] = inst[3]
+				writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{inst[3]})
 			}
 		case inst[1] == 0x0e:
 			// to MEM (immediate address)
 			switch {
 			case inst[2] < 0x0c:
-				mem[uint(reg[ds])*0x100+uint(inst[3])] = reg[inst[2]]
+				writeMemory(uint16(reg[ds])*0x100+uint16(inst[3]), []uint8{reg[inst[2]]})
 			}
 		case 0x10 <= inst[1] && inst[1] < 0x1c:
 			//mem[segreg:addrreg]
 			switch {
 			case 0x10 <= inst[2] && inst[2] < 0x1c:
 				if inst[3] < 0x0c {
-					mem[uint(reg[inst[1]-0x10])*0x100+uint(reg[inst[2]-0x10])] = reg[inst[3]]
+					writeMemory(uint16(reg[inst[1]-0x10])*0x100+uint16(reg[inst[2]-0x10]), []uint8{reg[inst[3]]})
 				}
 			}
 		case 0x20 <= inst[1] && inst[1] < 0x2c:
-			mem[uint(reg[inst[1]-0x20])*0x100+uint(inst[3])] = reg[inst[2]]
+			writeMemory(uint16(reg[inst[1]-0x20])*0x100+uint16(inst[3]), []uint8{reg[inst[2]]})
 		}
 	case 0x2:
 		// ADD
@@ -311,22 +312,22 @@ func decode(inst []uint8) {
 			reg[ax] += reg[inst[1]]
 		case inst[1] == 0x0c:
 			// add MEM
-			if uint(reg[ax])+uint(mem[uint(reg[ds])*0x100+uint(reg[bx])]) > 255 {
+			if uint(reg[ax])+uint(readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]) > 255 {
 				reg[flag] |= 0b10
 			}
-			reg[ax] += mem[uint(reg[ds])*0x100+uint(reg[bx])]
+			reg[ax] += readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
 		case inst[1] == 0x0d:
 			// add MEM (stack)
-			if uint(reg[ax])+uint(mem[uint(reg[ss])*0x100+uint(reg[bp])]) > 255 {
+			if uint(reg[ax])+uint(readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]) > 255 {
 				reg[flag] |= 0b10
 			}
-			reg[ax] += mem[uint(reg[ss])*0x100+uint(reg[bp])]
+			reg[ax] += readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
 		case inst[1] == 0x0e:
 			// add MEM (immediate address)
-			if uint(reg[ax])+uint(mem[uint(reg[ds])*0x100+uint(inst[2])]) > 255 {
+			if uint(reg[ax])+uint(readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0]) > 255 {
 				reg[flag] |= 0b10
 			}
-			reg[ax] += mem[uint(reg[ds])*0x100+uint(inst[2])]
+			reg[ax] += readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0]
 		case inst[1] == 0x0f:
 			// add immd
 			if uint(reg[ax])+uint(inst[2]) > 255 {
@@ -334,10 +335,10 @@ func decode(inst []uint8) {
 			}
 			reg[ax] += inst[2]
 		case inst[1] == 0xf0:
-			if uint(reg[ax])+uint(mem[uint(inst[2])*0x100+uint(inst[3])]) > 255 {
+			if uint(reg[ax])+uint(readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0]) > 255 {
 				reg[flag] |= 0b10
 			}
-			reg[ax] += mem[uint(inst[2])*0x100+uint(inst[3])]
+			reg[ax] += readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0]
 		}
 		if reg[ax] == 0 {
 			reg[flag] |= 0b1
@@ -350,16 +351,19 @@ func decode(inst []uint8) {
 			reg[inst[1]] = ^reg[inst[1]]
 		case inst[1] == 0x0c:
 			//ds* 0x100+bx
-			mem[uint(reg[ds])*0x100+uint(reg[bx])] = ^mem[uint(reg[ds])*0x100+uint(reg[bx])]
+			// mem[uint16(reg[ds])*0x100+uint16(reg[bx])] = ^mem[uint16(reg[ds])*0x100+uint16(reg[bx])]
+			writeMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), []uint8{^readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]})
 		case inst[1] == 0x0d:
 			//ss* 0x100+bp
-			mem[uint(reg[ss])*0x100+uint(reg[bp])] = ^mem[uint(reg[ss])*0x100+uint(reg[bp])]
+			writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{^readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]})
 		case inst[1] == 0x0e:
 			//immd
-			mem[uint(reg[ds])*0x100+uint(inst[2])] = ^mem[uint(reg[ds])*0x100+uint(inst[2])]
+			// mem[uint16(reg[ds])*0x100+uint16(inst[2])] = ^mem[uint16(reg[ds])*0x100+uint16(inst[2])]
+			writeMemory(uint16(reg[ds])*0x100+uint16(inst[2]), []uint8{^readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0]})
 		case inst[1] == 0xf0:
 			//mem[immd]
-			mem[uint(inst[2])*0x100+uint(inst[3])] = ^mem[uint(inst[2])*0x100+uint(inst[3])]
+			// mem[uint16(inst[2])*0x100+uint16(inst[3])] = ^mem[uint16(inst[2])*0x100+uint16(inst[3])]
+			writeMemory(uint16(inst[2])*0x100+uint16(inst[3]), []uint8{^readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0]})
 		}
 	case 0x4:
 		// OR
@@ -372,13 +376,13 @@ func decode(inst []uint8) {
 				reg[inst[1]] = reg[inst[1]] | reg[inst[2]]
 			case inst[2] == 0x0c:
 				//ds* 0x100+bx
-				reg[inst[1]] = reg[inst[1]] | mem[uint(reg[ds])*0x100+uint(reg[bx])]
+				reg[inst[1]] = reg[inst[1]] | readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
 			case inst[2] == 0x0d:
 				//ss* 0x100+bp
-				reg[inst[1]] = reg[inst[1]] | mem[uint(reg[ss])*0x100+uint(reg[bp])]
+				reg[inst[1]] = reg[inst[1]] | readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
 			case inst[2] == 0x0e:
 				//immd addr
-				reg[inst[1]] = reg[inst[1]] | mem[uint(reg[ds])*0x100+uint(inst[3])]
+				reg[inst[1]] = reg[inst[1]] | readMemory(uint16(reg[ds])*0x100+uint16(inst[3]), 1)[0]
 			case inst[2] == 0x0f:
 				//immd
 				reg[inst[1]] = reg[inst[1]] | inst[3]
@@ -388,20 +392,22 @@ func decode(inst []uint8) {
 			switch {
 			case inst[2] < 0x0c:
 				//register
-				mem[uint(reg[ds])*0x100+uint(reg[bx])] = mem[uint(reg[ds])*0x100+uint(reg[bx])] | reg[inst[2]]
+				// mem[uint16(reg[ds])*0x100+uint16(reg[bx])] = mem[uint16(reg[ds])*0x100+uint16(reg[bx])] | reg[inst[2]]
+				writeMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] | reg[inst[2]]})
 			case inst[2] == 0x0f:
 				//immd
-				mem[uint(reg[ds])*0x100+uint(reg[bx])] = mem[uint(reg[ds])*0x100+uint(reg[bx])] | inst[3]
+				// mem[uint16(reg[ds])*0x100+uint16(reg[bx])] = mem[uint16(reg[ds])*0x100+uint16(reg[bx])] | inst[3]
+				writeMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] | inst[3]})
 			}
 		case inst[1] == 0x0d:
 			//ss* 0x100+bp
 			switch {
 			case inst[2] < 0x0c:
 				//register
-				mem[uint(reg[ss])*0x100+uint(reg[bp])] = mem[uint(reg[ds])*0x100+uint(reg[bx])] | reg[inst[2]]
+				writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] | reg[inst[2]]})
 			case inst[2] == 0x0f:
 				//immd
-				mem[uint(reg[ss])*0x100+uint(reg[bp])] = mem[uint(reg[ds])*0x100+uint(reg[bx])] | inst[3]
+				writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] | inst[3]})
 			}
 		}
 	case 0x5:
@@ -411,60 +417,62 @@ func decode(inst []uint8) {
 			//register
 			switch {
 			case inst[2] < 0x0c:
-				//register
 				reg[inst[1]] = reg[inst[1]] & reg[inst[2]]
 			case inst[2] == 0x0c:
-				//ds* 0x100+bx
-				reg[inst[1]] = reg[inst[1]] & mem[uint(reg[ds])*0x100+uint(reg[bx])]
+				reg[inst[1]] = reg[inst[1]] & readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
 			case inst[2] == 0x0d:
-				//ss* 0x100+bp
-				reg[inst[1]] = reg[inst[1]] & mem[uint(reg[ss])*0x100+uint(reg[bp])]
+				reg[inst[1]] = reg[inst[1]] & readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
 			case inst[2] == 0x0e:
-				//immd addr
-				reg[inst[1]] = reg[inst[1]] & mem[uint(reg[ds])*0x100+uint(inst[3])]
+				reg[inst[1]] = reg[inst[1]] & readMemory(uint16(reg[ds])*0x100+uint16(inst[3]), 1)[0]
 			case inst[2] == 0x0f:
-				//immd
 				reg[inst[1]] = reg[inst[1]] & inst[3]
 			}
 		case inst[1] == 0x0c:
-			//ds* 0x100+bx
 			switch {
 			case inst[2] < 0x0c:
-				//register
-				mem[uint(reg[ds])*0x100+uint(reg[bx])] = mem[uint(reg[ds])*0x100+uint(reg[bx])] & reg[inst[2]]
+				writeMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] & reg[inst[2]]})
 			case inst[2] == 0x0f:
-				//immd
-				mem[uint(reg[ds])*0x100+uint(reg[bx])] = mem[uint(reg[ds])*0x100+uint(reg[bx])] & inst[3]
+				writeMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] & inst[3]})
 			}
 		case inst[1] == 0x0d:
-			//ss* 0x100+bp
 			switch {
 			case inst[2] < 0x0c:
-				//register
-				mem[uint(reg[ss])*0x100+uint(reg[bp])] = mem[uint(reg[ds])*0x100+uint(reg[bx])] & reg[inst[2]]
+				writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] & reg[inst[2]]})
 			case inst[2] == 0x0f:
-				//immd
-				mem[uint(reg[ss])*0x100+uint(reg[bp])] = mem[uint(reg[ds])*0x100+uint(reg[bx])] & inst[3]
+				writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] & inst[3]})
 			}
 		}
 	case 0x6:
 		// XOR
 		switch {
 		case inst[1] < 0x0c:
-			//register
 			switch {
+			case inst[2] < 0x0c:
+				reg[inst[1]] = reg[inst[1]] ^ reg[inst[2]]
+			case inst[2] == 0x0c:
+				reg[inst[1]] = reg[inst[1]] ^ readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
+			case inst[2] == 0x0d:
+				reg[inst[1]] = reg[inst[1]] ^ readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
+			case inst[2] == 0x0e:
+				reg[inst[1]] = reg[inst[1]] ^ readMemory(uint16(reg[ds])*0x100+uint16(inst[3]), 1)[0]
+			case inst[2] == 0x0f:
+				reg[inst[1]] = reg[inst[1]] ^ inst[3]
+			}
+		case inst[1] == 0x0c:
+			switch {
+			case inst[2] < 0x0c:
 			case inst[2] < 0x0c:
 				//register
 				reg[inst[1]] = reg[inst[1]] ^ reg[inst[2]]
 			case inst[2] == 0x0c:
 				//ds* 0x100+bx
-				reg[inst[1]] = reg[inst[1]] ^ mem[uint(reg[ds])*0x100+uint(reg[bx])]
+				reg[inst[1]] = reg[inst[1]] ^ readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
 			case inst[2] == 0x0d:
 				//ss* 0x100+bp
-				reg[inst[1]] = reg[inst[1]] ^ mem[uint(reg[ss])*0x100+uint(reg[bp])]
+				reg[inst[1]] = reg[inst[1]] ^ readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
 			case inst[2] == 0x0e:
 				//immd addr
-				reg[inst[1]] = reg[inst[1]] ^ mem[uint(reg[ds])*0x100+uint(inst[3])]
+				reg[inst[1]] = reg[inst[1]] ^ readMemory(uint16(reg[ds])*0x100+uint16(inst[3]), 1)[0]
 			case inst[2] == 0x0f:
 				//immd
 				reg[inst[1]] = reg[inst[1]] ^ inst[3]
@@ -474,20 +482,22 @@ func decode(inst []uint8) {
 			switch {
 			case inst[2] < 0x0c:
 				//register
-				mem[uint(reg[ds])*0x100+uint(reg[bx])] = mem[uint(reg[ds])*0x100+uint(reg[bx])] ^ reg[inst[2]]
+				// mem[uint16(reg[ds])*0x100+uint16(reg[bx])] = mem[uint16(reg[ds])*0x100+uint16(reg[bx])] ^ reg[inst[2]]
+				writeMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] ^ reg[inst[2]]})
 			case inst[2] == 0x0f:
 				//immd
-				mem[uint(reg[ds])*0x100+uint(reg[bx])] = mem[uint(reg[ds])*0x100+uint(reg[bx])] ^ inst[3]
+				// mem[uint16(reg[ds])*0x100+uint16(reg[bx])] = mem[uint16(reg[ds])*0x100+uint16(reg[bx])] ^ inst[3]
+				writeMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] ^ inst[3]})
 			}
 		case inst[1] == 0x0d:
 			//ss* 0x100+bp
 			switch {
 			case inst[2] < 0x0c:
 				//register
-				mem[uint(reg[ss])*0x100+uint(reg[bp])] = mem[uint(reg[ds])*0x100+uint(reg[bx])] ^ reg[inst[2]]
+				writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] ^ reg[inst[2]]})
 			case inst[2] == 0x0f:
 				//immd
-				mem[uint(reg[ss])*0x100+uint(reg[bp])] = mem[uint(reg[ds])*0x100+uint(reg[bx])] ^ inst[3]
+				writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] ^ inst[3]})
 			}
 		}
 	case 0x7:
@@ -502,25 +512,26 @@ func decode(inst []uint8) {
 			reg[inst[1]] = reg[inst[1]] << inst[2]
 		case inst[1] == 0x0c:
 			//ds* 0x100+bx
-			if (mem[uint(reg[ds])*0x100+uint(reg[bx])]<<inst[2]-1)>>7&1 == 1 {
+			if (readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]<<inst[2]-1)>>7&1 == 1 {
 				//Carry
 				reg[flag] |= 0b10
 			}
-			mem[uint(reg[ds])*0x100+uint(reg[bx])] = mem[uint(reg[ds])*0x100+uint(reg[bx])] << inst[2]
+			// mem[uint16(reg[ds])*0x100+uint16(reg[bx])] = mem[uint16(reg[ds])*0x100+uint16(reg[bx])] << inst[2]
+			writeMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] << inst[2]})
 		case inst[1] == 0x0d:
 			//ss* 0x100+bp
-			if (mem[uint(reg[ss])*0x100+uint(reg[bp])]<<inst[2]-1)>>7&1 == 1 {
+			if (readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]<<inst[2]-1)>>7&1 == 1 {
 				//Carry
 				reg[flag] |= 0b10
 			}
-			mem[uint(reg[ss])*0x100+uint(reg[bp])] = mem[uint(reg[ss])*0x100+uint(reg[bp])] << inst[2]
+			writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0] << inst[2]})
 		case inst[1] == 0x0e:
 			//immd
-			if (mem[uint(reg[ds])*0x100+uint(inst[3])]<<inst[2]-1)>>7&1 == 1 {
+			if (readMemory(uint16(reg[ds])*0x100+uint16(inst[3]), 1)[0]<<inst[2]-1)>>7&1 == 1 {
 				//Carry
 				reg[flag] |= 0b10
 			}
-			mem[uint(reg[ds])*0x100+uint(inst[3])] = mem[uint(reg[ds])*0x100+uint(inst[3])] << inst[2]
+			writeMemory(uint16(reg[ds])*0x100+uint16(inst[3]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(inst[3]), 1)[0] << inst[2]})
 		}
 	case 0x8:
 		// SHR
@@ -530,13 +541,13 @@ func decode(inst []uint8) {
 			reg[inst[1]] = reg[inst[1]] >> inst[2]
 		case inst[1] == 0x0c:
 			//ds* 0x100+bx
-			mem[uint(reg[ds])*0x100+uint(reg[bx])] = mem[uint(reg[ds])*0x100+uint(reg[bx])] >> inst[2]
+			writeMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] >> inst[2]})
 		case inst[1] == 0x0d:
 			//ss* 0x100+bp
-			mem[uint(reg[ss])*0x100+uint(reg[bp])] = mem[uint(reg[ss])*0x100+uint(reg[bp])] >> inst[2]
+			writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0] >> inst[2]})
 		case inst[1] == 0x0e:
 			//immd
-			mem[uint(reg[ds])*0x100+uint(inst[3])] = mem[uint(reg[ds])*0x100+uint(inst[3])] >> inst[2]
+			writeMemory(uint16(reg[ds])*0x100+uint16(inst[3]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(inst[3]), 1)[0] >> inst[2]})
 		}
 	case 0x9:
 		// ROL
@@ -546,17 +557,14 @@ func decode(inst []uint8) {
 			reg[inst[1]] <<= (inst[2] % 8)
 			reg[inst[1]] |= (tmp >> (8 - inst[2]%8))
 		case inst[1] == 0x0c:
-			tmp := mem[uint(reg[ds])*0x100+uint(reg[bx])]
-			mem[uint(reg[ds])*0x100+uint(reg[bx])] <<= (inst[2] % 8)
-			mem[uint(reg[ds])*0x100+uint(reg[bx])] |= (tmp >> (8 - inst[2]%8))
+			tmp := readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
+			writeMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), []uint8{(tmp << (inst[2] % 8)) | (tmp >> (8 - inst[2]%8))})
 		case inst[1] == 0x0d:
-			tmp := mem[uint(reg[ss])*0x100+uint(reg[bp])]
-			mem[uint(reg[ss])*0x100+uint(reg[bp])] <<= (inst[2] % 8)
-			mem[uint(reg[ss])*0x100+uint(reg[bp])] |= (tmp >> (8 - inst[2]%8))
+			tmp := readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
+			writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{(tmp << (inst[2] % 8)) | (tmp >> (8 - inst[2]%8))})
 		case inst[1] == 0x0e:
-			tmp := mem[uint(reg[ds])*0x100+uint(inst[3])]
-			mem[uint(reg[ds])*0x100+uint(inst[3])] <<= (inst[2] % 8)
-			mem[uint(reg[ds])*0x100+uint(inst[3])] |= (tmp >> (8 - inst[2]%8))
+			tmp := readMemory(uint16(reg[ds])*0x100+uint16(inst[3]), 1)[0]
+			writeMemory(uint16(reg[ds])*0x100+uint16(inst[3]), []uint8{(tmp << (inst[2] % 8)) | (tmp >> (8 - inst[2]%8))})
 		}
 	case 0xa:
 		// ROR
@@ -566,17 +574,14 @@ func decode(inst []uint8) {
 			reg[inst[1]] >>= (inst[2] % 8)
 			reg[inst[1]] |= (tmp << (8 - inst[2]%8))
 		case inst[1] == 0x0c:
-			tmp := mem[uint(reg[ds])*0x100+uint(reg[bx])]
-			mem[uint(reg[ds])*0x100+uint(reg[bx])] >>= (inst[2] % 8)
-			mem[uint(reg[ds])*0x100+uint(reg[bx])] |= (tmp << (8 - inst[2]%8))
+			tmp := readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
+			writeMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), []uint8{(tmp >> (inst[2] % 8)) | (tmp << (8 - inst[2]%8))})
 		case inst[1] == 0x0d:
-			tmp := mem[uint(reg[ss])*0x100+uint(reg[bp])]
-			mem[uint(reg[ss])*0x100+uint(reg[bp])] >>= (inst[2] % 8)
-			mem[uint(reg[ss])*0x100+uint(reg[bp])] |= (tmp << (8 - inst[2]%8))
+			tmp := readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
+			writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{(tmp >> (inst[2] % 8)) | (tmp << (8 - inst[2]%8))})
 		case inst[1] == 0x0e:
-			tmp := mem[uint(reg[ds])*0x100+uint(inst[3])]
-			mem[uint(reg[ds])*0x100+uint(inst[3])] >>= (inst[2] % 8)
-			mem[uint(reg[ds])*0x100+uint(inst[3])] |= (tmp << (8 - inst[2]%8))
+			tmp := readMemory(uint16(reg[ds])*0x100+uint16(inst[3]), 1)[0]
+			writeMemory(uint16(reg[ds])*0x100+uint16(inst[3]), []uint8{(tmp >> (inst[2] % 8)) | (tmp << (8 - inst[2]%8))})
 		}
 	case 0xb:
 		push(inst)
@@ -609,64 +614,64 @@ func decode(inst []uint8) {
 					reg[flag] &= 0xfb
 				}
 			case inst[2] == 0x0c:
-				if reg[inst[1]] == mem[uint(reg[ds])*0x100+uint(reg[bx])] {
+				if reg[inst[1]] == readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] {
 					reg[flag] |= 0x1
 				} else {
 					reg[flag] &= 0xfe
 				}
-				if reg[inst[1]] < mem[uint(reg[ds])*0x100+uint(reg[bx])] {
+				if reg[inst[1]] < readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] {
 					reg[flag] |= 0x2
 				} else {
 					reg[flag] &= 0xfd
 				}
-				if (reg[inst[1]]-mem[uint(reg[ds])*0x100+uint(reg[bx])])&0x80 != 0 {
+				if (reg[inst[1]]-readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0])&0x80 != 0 {
 					reg[flag] |= 0x8
 				} else {
 					reg[flag] &= 0xf7
 				}
-				if reg[inst[1]]&0x80 != mem[uint(reg[ds])*0x100+uint(reg[bx])]&0x80 && (reg[inst[1]]-mem[uint(reg[ds])*0x100+uint(reg[bx])])&0x80 != reg[inst[1]]&0x80 {
+				if reg[inst[1]]&0x80 != readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]&0x80 && (reg[inst[1]]-readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0])&0x80 != reg[inst[1]]&0x80 {
 					reg[flag] |= 0x4
 				} else {
 					reg[flag] &= 0xfb
 				}
 			case inst[2] == 0x0d:
-				if reg[inst[1]] == mem[uint(reg[ss])*0x100+uint(reg[bp])] {
+				if reg[inst[1]] == readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0] {
 					reg[flag] |= 0x1
 				} else {
 					reg[flag] &= 0xfe
 				}
-				if reg[inst[1]] < mem[uint(reg[ss])*0x100+uint(reg[bp])] {
+				if reg[inst[1]] < readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0] {
 					reg[flag] |= 0x2
 				} else {
 					reg[flag] &= 0xfd
 				}
-				if (reg[inst[1]]-mem[uint(reg[ss])*0x100+uint(reg[bp])])&0x80 != 0 {
+				if (reg[inst[1]]-readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0])&0x80 != 0 {
 					reg[flag] |= 0x8
 				} else {
 					reg[flag] &= 0xf7
 				}
-				if reg[inst[1]]&0x80 != mem[uint(reg[ss])*0x100+uint(reg[bp])]&0x80 && (reg[inst[1]]-mem[uint(reg[ss])*0x100+uint(reg[bp])])&0x80 != reg[inst[1]]&0x80 {
+				if reg[inst[1]]&0x80 != readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]&0x80 && (reg[inst[1]]-readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0])&0x80 != reg[inst[1]]&0x80 {
 					reg[flag] |= 0x4
 				} else {
 					reg[flag] &= 0xfb
 				}
 			case inst[2] == 0x0e:
-				if reg[inst[1]] == mem[uint(reg[ds])*0x100+uint(inst[3])] {
+				if reg[inst[1]] == readMemory(uint16(reg[ds])*0x100+uint16(inst[3]), 1)[0] {
 					reg[flag] |= 0x1
 				} else {
 					reg[flag] &= 0xfe
 				}
-				if reg[inst[1]] < mem[uint(reg[ds])*0x100+uint(inst[3])] {
+				if reg[inst[1]] < readMemory(uint16(reg[ds])*0x100+uint16(inst[3]), 1)[0] {
 					reg[flag] |= 0x2
 				} else {
 					reg[flag] &= 0xfd
 				}
-				if (reg[inst[1]]-mem[uint(reg[ds])*0x100+uint(inst[3])])&0x80 != 0 {
+				if (reg[inst[1]]-readMemory(uint16(reg[ds])*0x100+uint16(inst[3]), 1)[0])&0x80 != 0 {
 					reg[flag] |= 0x8
 				} else {
 					reg[flag] &= 0xf7
 				}
-				if reg[inst[1]]&0x80 != mem[uint(reg[ds])*0x100+uint(inst[3])]&0x80 && (reg[inst[1]]-mem[uint(reg[ds])*0x100+uint(inst[3])])&0x80 != reg[inst[1]]&0x80 {
+				if reg[inst[1]]&0x80 != readMemory(uint16(reg[ds])*0x100+uint16(inst[3]), 1)[0]&0x80 && (reg[inst[1]]-readMemory(uint16(reg[ds])*0x100+uint16(inst[3]), 1)[0])&0x80 != reg[inst[1]]&0x80 {
 					reg[flag] |= 0x4
 				} else {
 					reg[flag] &= 0xfb
@@ -695,66 +700,66 @@ func decode(inst []uint8) {
 			}
 		case inst[1] == 0x0c:
 			// mem-immd
-			if mem[uint(reg[ds])*0x100+uint(reg[bx])] == inst[2] {
+			if readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] == inst[2] {
 				reg[flag] |= 0x1
 			} else {
 				reg[flag] &= 0xfe
 			}
-			if mem[uint(reg[ds])*0x100+uint(reg[bx])] < inst[2] {
+			if readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] < inst[2] {
 				reg[flag] |= 0x2
 			} else {
 				reg[flag] &= 0xfd
 			}
-			if (mem[uint(reg[ds])*0x100+uint(reg[bx])]-inst[2])&0x80 != 0 {
+			if (readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]-inst[2])&0x80 != 0 {
 				reg[flag] |= 0x8
 			} else {
 				reg[flag] &= 0xf7
 			}
-			if mem[uint(reg[ds])*0x100+uint(reg[bx])]&0x80 != inst[2]&0x80 && (mem[uint(reg[ds])*0x100+uint(reg[bx])]-inst[2])&0x80 != mem[uint(reg[ds])*0x100+uint(reg[bx])]&0x80 {
+			if readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]&0x80 != inst[2]&0x80 && (readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]-inst[2])&0x80 != readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]&0x80 {
 				reg[flag] |= 0x4
 			} else {
 				reg[flag] &= 0xfb
 			}
 		case inst[1] == 0x0d:
 			// mem-immd
-			if mem[uint(reg[ss])*0x100+uint(reg[bp])] == inst[2] {
+			if readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0] == inst[2] {
 				reg[flag] |= 0x1
 			} else {
 				reg[flag] &= 0xfe
 			}
-			if mem[uint(reg[ss])*0x100+uint(reg[bp])] < inst[2] {
+			if readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0] < inst[2] {
 				reg[flag] |= 0x2
 			} else {
 				reg[flag] &= 0xfd
 			}
-			if (mem[uint(reg[ss])*0x100+uint(reg[bp])]-inst[2])&0x80 != 0 {
+			if (readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]-inst[2])&0x80 != 0 {
 				reg[flag] |= 0x8
 			} else {
 				reg[flag] &= 0xf7
 			}
-			if mem[uint(reg[ss])*0x100+uint(reg[bp])]&0x80 != inst[2]&0x80 && (mem[uint(reg[ss])*0x100+uint(reg[bp])]-inst[2])&0x80 != mem[uint(reg[ss])*0x100+uint(reg[bp])]&0x80 {
+			if readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]&0x80 != inst[2]&0x80 && (readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]-inst[2])&0x80 != readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]&0x80 {
 				reg[flag] |= 0x4
 			} else {
 				reg[flag] &= 0xfb
 			}
 		case inst[1] == 0x0e:
 			// mem(immd1)-immd2
-			if mem[uint(reg[ds])*0x100+uint(inst[2])] == inst[3] {
+			if readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0] == inst[3] {
 				reg[flag] |= 0x1
 			} else {
 				reg[flag] &= 0xfe
 			}
-			if mem[uint(reg[ds])*0x100+uint(inst[2])] < inst[3] {
+			if readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0] < inst[3] {
 				reg[flag] |= 0x2
 			} else {
 				reg[flag] &= 0xfd
 			}
-			if (mem[uint(reg[ds])*0x100+uint(inst[2])]-inst[3])&0x80 != 0 {
+			if (readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0]-inst[3])&0x80 != 0 {
 				reg[flag] |= 0x8
 			} else {
 				reg[flag] &= 0xf7
 			}
-			if mem[uint(reg[ds])*0x100+uint(inst[2])]&0x80 != inst[3]&0x80 && (mem[uint(reg[ds])*0x100+uint(inst[2])]-inst[3])&0x80 != mem[uint(reg[ds])*0x100+uint(inst[2])]&0x80 {
+			if readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0]&0x80 != inst[3]&0x80 && (readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0]-inst[3])&0x80 != readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0]&0x80 {
 				reg[flag] |= 0x4
 			} else {
 				reg[flag] &= 0xfb
@@ -774,24 +779,24 @@ func decode(inst []uint8) {
 			reg[ip] = inst[3] - 4
 		case (inst[1] & 0x0f) == 0x0c:
 			if inst[1]&0xf0 != 0 {
-				reg[cs] = mem[uint(reg[ds])*0x100+uint(reg[bx])+1]
+				reg[cs] = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx])+1, 1)[0]
 			}
-			reg[ip] = mem[uint(reg[ds])*0x100+uint(reg[bx])] - 4
+			reg[ip] = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] - 4
 		case (inst[1] & 0x0f) == 0x0d:
 			if inst[1]&0xf0 != 0 {
-				reg[cs] = mem[uint(reg[ss])*0x100+uint(reg[bp])+1]
+				reg[cs] = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp])+1, 1)[0]
 			}
-			reg[ip] = mem[uint(reg[ss])*0x100+uint(reg[bp])] - 4
+			reg[ip] = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0] - 4
 		case (inst[1] & 0x0f) == 0x0e:
 			if inst[1]&0xf0 != 0 {
-				reg[cs] = mem[uint(reg[ds])*0x100+uint(inst[2])+1]
+				reg[cs] = readMemory(uint16(reg[ds])*0x100+uint16(inst[2])+1, 1)[0]
 			}
-			reg[ip] = mem[uint(reg[ds])*0x100+uint(inst[2])] - 4
+			reg[ip] = readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0] - 4
 		case inst[1] == 0xf0:
-			reg[ip] = mem[uint(inst[2])*0x100+uint(inst[3])] - 4
+			reg[ip] = readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0] - 4
 		case inst[1] == 0xf1:
-			reg[cs] = mem[uint(inst[2])*0x100+uint(inst[3])+1]
-			reg[ip] = mem[uint(inst[2])*0x100+uint(inst[3])] - 4
+			reg[cs] = readMemory(uint16(inst[2])*0x100+uint16(inst[3])+1, 1)[0]
+			reg[ip] = readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0] - 4
 		}
 	case 0xf:
 		// JZ
@@ -833,20 +838,23 @@ func decode(inst []uint8) {
 				reg[flag] |= 0b10
 			}
 		case inst[1] == 0x0c:
-			mem[uint(reg[ds])*0x100+uint(reg[bx])]++
-			if mem[uint(reg[ds])*0x100+uint(reg[bx])]+1 == 0 {
+			tmp := readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] + 1
+			writeMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), []uint8{tmp})
+			if tmp == 0 {
 				//CF
 				reg[flag] |= 0b10
 			}
 		case inst[1] == 0x0d:
-			mem[uint(reg[ss])*0x100+uint(reg[bp])]++
-			if mem[uint(reg[ss])*0x100+uint(reg[bp])]+1 == 0 {
+			tmp := readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0] + 1
+			writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{tmp})
+			if tmp == 0 {
 				//CF
 				reg[flag] |= 0b10
 			}
 		case inst[1] == 0x0e:
-			mem[uint(reg[ds])*0x100+uint(inst[2])]++
-			if mem[uint(reg[ds])*0x100+uint(inst[2])]+1 == 0 {
+			tmp := readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0] + 1
+			writeMemory(uint16(reg[ds])*0x100+uint16(inst[2]), []uint8{tmp})
+			if tmp == 0 {
 				//CF
 				reg[flag] |= 0b10
 			}
@@ -917,33 +925,33 @@ func decode(inst []uint8) {
 		case inst[1] == 0x0c:
 			//near	mem	ds
 			push([]uint8{0x00, 0x00, 0x00, 0x00}) //inst=>0x00,0x00(ip)の値-4,0x00,0x00
-			reg[ip] = mem[uint(reg[ds])*0x100+uint(reg[bx])] - 4
+			reg[ip] = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] - 4
 		case inst[1] == 0x1c:
 			//far	mem	ds
 			push([]uint8{0x00, 0x00, 0x00, 0x00})
 			push([]uint8{0x00, 0x07, 0x00, 0x00}) //PUSH cs
-			reg[ip] = mem[uint(reg[ds])*0x100+uint(reg[bx])+4] - 4
-			reg[cs] = mem[uint(reg[ds])*0x100+uint(reg[bx])]
+			reg[ip] = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx])+4, 1)[0] - 4
+			reg[cs] = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
 		case inst[1] == 0x0d:
 			//near  mem ss
 			push([]uint8{0x00, 0x00, 0x00, 0x00}) //inst=>0x00,0x00(ip)の値-4,0x00,0x00
-			reg[ip] = mem[uint(reg[ss])*0x100+uint(reg[bp])] - 4
+			reg[ip] = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0] - 4
 		case inst[1] == 0x1d:
 			//far	mem ss
 			push([]uint8{0x00, 0x00, 0x00, 0x00})
 			push([]uint8{0x00, 0x07, 0x00, 0x00}) //PUSH cs
-			reg[ip] = mem[uint(reg[ss])*0x100+uint(reg[bp])+4] - 4
-			reg[cs] = mem[uint(reg[ss])*0x100+uint(reg[bp])]
+			reg[ip] = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp])+4, 1)[0] - 4
+			reg[cs] = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
 		case inst[1] == 0x0e:
 			//near	mem imm
 			push([]uint8{0x00, 0x00, 0x00, 0x00}) //inst=>0x00,0x00(ip)の値-4,0x00,0x00
-			reg[ip] = mem[uint(reg[ds])*0x100+uint(inst[2])] - 4
+			reg[ip] = readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0] - 4
 		case inst[1] == 0x1e:
 			//far	mem imm
 			push([]uint8{0x00, 0x00, 0x00, 0x00})
 			push([]uint8{0x00, 0x07, 0x00, 0x00}) //PUSH cs
-			reg[ip] = mem[uint(reg[ds])*0x100+uint(inst[2])+4] - 4
-			reg[cs] = mem[uint(reg[ds])*0x100+uint(inst[2])]
+			reg[ip] = readMemory(uint16(reg[ds])*0x100+uint16(inst[2])+4, 1)[0] - 4
+			reg[cs] = readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0]
 		case inst[1] == 0x0f:
 			//short	imm
 			push([]uint8{0x00, 0x00, 0x00, 0x00}) //inst=>0x00,0x00(ip)の値-4,0x00,0x00
@@ -961,13 +969,13 @@ func decode(inst []uint8) {
 		case inst[1] == 0xf0:
 			//near	memimm2
 			push([]uint8{0x00, 0x00, 0x00, 0x00})
-			reg[ip] = mem[uint(inst[2])*0x100+uint(inst[3])] - 4
+			reg[ip] = readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0] - 4
 		case inst[1] == 0xf1:
 			//far 	memimm2
 			push([]uint8{0x00, 0x00, 0x00, 0x00})
 			push([]uint8{0x00, 0x07, 0x00, 0x00}) //PUSH cs
-			reg[ip] = mem[uint(inst[2])*0x100+uint(inst[3])+4] - 4
-			reg[cs] = mem[uint(inst[2])*0x100+uint(inst[3])]
+			reg[ip] = readMemory(uint16(inst[2])*0x100+uint16(inst[3])+4, 1)[0] - 4
+			reg[cs] = readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0]
 		}
 	case 0x21:
 		//RET

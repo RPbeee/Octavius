@@ -7,7 +7,7 @@ import (
 
 var irq [2]uint64
 
-func interrupt() {
+func interrupt() { // こいつのメモリアクセスは割込みベクタだから物理アドレス参照。
 	if (irq[0] != 0 || irq[1] != 0) && reg[flag]>>4&1 == 1 {
 		//Interrupt
 		push([]uint8{0x00, 0x00, 0x00, 0x00}) //PUSH ip
