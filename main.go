@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"slices"
 	"time"
 
 	"github.com/gdamore/tcell"
@@ -240,11 +239,7 @@ func reset() { //Resets all the data
 }
 
 func tick() {
-	if (uint(reg[cs])*0x100+uint(reg[ip]))+uint(InstLength)-1 >= MemSize { //OverSize
-		decode(slices.Concat(mem[(uint(reg[cs])*0x100+uint(reg[ip])):MemSize], mem[:(uint(reg[cs])*0x100+uint(reg[ip]))+uint(InstLength)-MemSize]))
-	} else {
-		decode(mem[(uint(reg[cs])*0x100 + uint(reg[ip])) : (uint(reg[cs])*0x100+uint(reg[ip]))+uint(InstLength)])
-	}
+	decode(readMemory(uint16(reg[cs])*0x100+uint16(reg[ip]), InstLength))
 }
 
 func decode(inst []uint8) {
