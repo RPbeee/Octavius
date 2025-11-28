@@ -1010,6 +1010,14 @@ func decode(inst []uint8) {
 				idtReg = addr
 			}
 		}
+	case 0x24:
+		//SYSCALL
+		//INTERRUPT 0x7f
+		irq[1] |= 0x8000000000000000
+
+		//割り込みと通常処理が順番な都合
+		reg[ip] -= InstLength
+		//
 	case 0xff:
 		//HLT
 		//

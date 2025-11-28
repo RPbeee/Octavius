@@ -62,7 +62,7 @@ flag: 0xb
 |割り込みID (0x00~0x7f)|割り込み内容|
 |-|-|
 |0x00|キーボード入力|
-|0x7f||
+|0x7f|システムコール|
 ## Instructions
 
 ### Addressing Modes
@@ -84,7 +84,7 @@ flag: 0xb
 | `0x10`~`0x1b` | Registers | Segment:Address |
 | `0x20`~`0x2b` | Reg + Imm | Segreg + Addrimm |
 
-### Instruction Set
+### Instruction Set (Kernel Onlyは下付き線)
 
 | Opcode | Mnemonic | Syntax | Description |
 | :--- | :--- | :--- | :--- |
@@ -104,14 +104,15 @@ flag: 0xb
 | `0x0e` | **JMP** | `JMP Mode+Source ...` | Jump to address. See **Jump Modes** below. |
 | `0x0f`~`0x14` | **JZ** | `JZ [OFFSET(+-)]` | Jump if Zero. Jumps to `CS:IP+OFFSET`. |
 | `0x15` | **INC** | `INC Source [NULL/ADDR] [NULL]` | Increment value. |
-| `0x16` | **IN** | `IN Dest [Register/IOPort]` | Input from port. See **I/O Ports** below. |
-| `0x17` | **OUT** | `OUT [Register/IOPort] [Source]` | Output to port. |
+| `0x16` | 👑**IN** | `IN Dest [Register/IOPort]` | Input from port. See **I/O Ports** below. |
+| `0x17` | 👑**OUT** | `OUT [Register/IOPort] [Source]` | Output to port. |
 | `0x18` | **JC** | `JC` | Jump if Carry. |
 | `0x19` | **JNC** | `JNC` | Jump if Not Carry. |
 | `0x20` | **CALL** | `CALL Source1 [Source2/Segment/ADDR] [ADDR]` | Call subroutine. |
 | `0x21` | **RET** | `RET [near, far]` | Return from subroutine. |
 | `0x22` | **IRET** | `IRET [NULL] [NULL] [NULL]` | Return from interrupt. |
-| `0x23` | **LST** | `LST [TABLE TYPE] [SEGREG] [REG2]` | Load system table. See **System Tables** below. |
+| `0x23` | 👑**LST** | `LST [TABLE TYPE] [SEGREG] [REG2]` | Load system table. See **System Tables** below. |
+| `0x24` | **SYSCALL** | `SYSCALL [NULL] [NUll] [NULL]` | Call system. See **Interruptions** above. |
 | `0xFF` | **HLT** | `HLT [NULL] [NULL] [NULL]` | Halt processor. |
 
 ### Jump Modes (`0x0e` JMP)
