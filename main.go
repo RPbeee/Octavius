@@ -30,10 +30,14 @@ const (
 	flag = 0xb
 )
 
+var idtReg uint8
+var ptReg uint8
+var statsReg uint8
 var reg [12]uint8
 var mem [MemSize]uint8
 var ioport [256]uint8
 
+var halting bool
 var now time.Time
 var freq float64
 
@@ -49,7 +53,6 @@ func main() {
 	defer screen.Fini()
 	width, _ := screen.Size()
 	leftWidth := width / 2
-	//rightWidth := width - leftWidth
 
 	debugStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.ColorGreen)
 	displayStyle := tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorBlack)
@@ -92,9 +95,6 @@ func main() {
 			fmt.Sprintf("レジスタ:%b\n", reg),
 			fmt.Sprintln("メモリ:", mem[uint16(reg[cs])*0x100:uint(reg[cs])*0x100+256]),
 			fmt.Sprintln("VRAM:", mem[uint16(0xfb)*0x100+0:uint(0xfb)*0x100+256]),
-			//fmt.Sprintf("キーバッファ:%d", len(keybuff)),
-			//fmt.Sprintf("SS:0x%x SP:0x%x", reg[ss], reg[sp]),
-			//fmt.Sprintf("0xfeff:0x%x BX:%x", mem[0xfeff], reg[bx]),
 			fmt.Sprintln("CPU freq (Hz):", freq),
 		}
 		for y, line := range debugLines {
@@ -127,16 +127,20 @@ func main() {
 		interrupt()
 
 		reg[ip] += InstLength
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
 func reset() { //Resets all the data
+	halting = false
+	idtReg = 0x00
+	ptReg = 0x00
+	statsReg = 0x00
 	reg = [12]uint8{}
 	reg[cs] = 0xff
 	mem = [MemSize]uint8{}
 	copy(mem[:uint(InstLength)*0x2], []uint8{
-		0x01, 0x00, //keyboard interrupt vector 0x1000
+		0x01, 0x00, //keyboard interrupt vector 0x0100
 	})
 	copy(mem[0x0100:0x0100+256], []uint8{
 		0x0b, 0x01, 0x00, 0x00,
@@ -993,6 +997,22 @@ func decode(inst []uint8) {
 		pop([]uint8{0x00, 0x0b, 0x00, 0x00}) //POP flags
 		pop([]uint8{0x00, 0x07, 0x00, 0x00}) //POP cs
 		pop([]uint8{0x00, 0x00, 0x00, 0x00}) //POP ip
+	case 0x23:
+		//LST
+		if 0x0a >= inst[2] && inst[2] >= 0x07 && inst[3] <= 0x0a {
+			addr := readMemory(uint16(reg[inst[2]])*0x100+uint16(reg[inst[3]]), 1)[0]
+			switch inst[1] {
+			case 0x00:
+				// Page Table
+				ptReg = addr
+			case 0x01:
+				// Interruption Description Table
+				idtReg = addr
+			}
+		}
+	case 0xff:
+		//HLT
+		//
 	default:
 		// NOP
 	}
