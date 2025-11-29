@@ -58,7 +58,7 @@ func main() {
 	displayStyle := tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorBlack)
 
 	keyCh := make(chan rune, 10)
-	go func() {
+	go func() { //keyboard
 		for {
 			ev := screen.PollEvent()
 			switch tev := ev.(type) {
@@ -865,41 +865,51 @@ func decode(inst []uint8) {
 		}
 	case 0x16:
 		// IN
-		if inst[1] < 0x0c {
-			if inst[2] < 0x0c {
-				reg[inst[1]] = ioport[reg[inst[2]]]
-				switch reg[inst[2]] {
-				case floppy_DATA:
-					updateFloppyIO()
-				case key_DATA:
-					updateKeys()
-				}
-			} else {
-				reg[inst[1]] = ioport[inst[2]]
-				switch inst[2] {
-				case floppy_DATA:
-					updateFloppyIO()
-				case key_DATA:
-					updateKeys()
-				}
-			}
-		}
-	case 0x17:
-		// OUT
-		if inst[1] < 0x0c {
-			if inst[2] < 0x0c {
-				ioport[reg[inst[1]]] = reg[inst[2]]
-				if reg[inst[1]] == floppy_DATA {
-					updateFloppyIO()
+		if statsReg>>2&1 == 0 {
+			if inst[1] < 0x0c {
+				if inst[2] < 0x0c {
+					reg[inst[1]] = ioport[reg[inst[2]]]
+					switch reg[inst[2]] {
+					case floppy_DATA:
+						updateFloppyIO()
+					case key_DATA:
+						updateKeys()
+					}
+				} else {
+					reg[inst[1]] = ioport[inst[2]]
+					switch inst[2] {
+					case floppy_DATA:
+						updateFloppyIO()
+					case key_DATA:
+						updateKeys()
+					}
 				}
 			}
 		} else {
-			if inst[2] < 0x0c {
-				ioport[inst[1]] = reg[inst[2]]
-				if inst[1] == floppy_DATA {
-					updateFloppyIO()
+			// not Privileged
+			// INTERRUPT
+		}
+	case 0x17:
+		// OUT
+		if statsReg>>2&1 == 0 {
+			if inst[1] < 0x0c {
+				if inst[2] < 0x0c {
+					ioport[reg[inst[1]]] = reg[inst[2]]
+					if reg[inst[1]] == floppy_DATA {
+						updateFloppyIO()
+					}
+				}
+			} else {
+				if inst[2] < 0x0c {
+					ioport[inst[1]] = reg[inst[2]]
+					if inst[1] == floppy_DATA {
+						updateFloppyIO()
+					}
 				}
 			}
+		} else {
+			// not Privileged
+			// INTERRUPT
 		}
 	case 0x18:
 		//JC
@@ -999,16 +1009,21 @@ func decode(inst []uint8) {
 		pop([]uint8{0x00, 0x00, 0x00, 0x00}) //POP ip
 	case 0x23:
 		//LST
-		if 0x0a >= inst[2] && inst[2] >= 0x07 && inst[3] <= 0x0a {
-			addr := readMemory(uint16(reg[inst[2]])*0x100+uint16(reg[inst[3]]), 1)[0]
-			switch inst[1] {
-			case 0x00:
-				// Page Table
-				ptReg = addr
-			case 0x01:
-				// Interruption Description Table
-				idtReg = addr
+		if statsReg>>2&1 == 0 {
+			if 0x0a >= inst[2] && inst[2] >= 0x07 && inst[3] <= 0x0a {
+				addr := readMemory(uint16(reg[inst[2]])*0x100+uint16(reg[inst[3]]), 1)[0]
+				switch inst[1] {
+				case 0x00:
+					// Page Table
+					ptReg = addr
+				case 0x01:
+					// Interruption Description Table
+					idtReg = addr
+				}
 			}
+		} else {
+			// not Privileged
+			// INTERRUPT
 		}
 	case 0x24:
 		//SYSCALL
