@@ -248,6 +248,8 @@ func tick() {
 
 func decode(inst []uint8) {
 	switch inst[0] {
+	case 0x0:
+		//NOP
 	case 0x1:
 		// MOV
 		switch {
@@ -1028,8 +1030,7 @@ func decode(inst []uint8) {
 	case 0x24:
 		//SYSCALL
 		//INTERRUPT 0x70
-		irq[1] |= 0x10000
-
+		irq[1] |= 0x1000000000000
 		//割り込みと通常処理が順番な都合
 		reg[ip] -= InstLength
 		//
@@ -1037,6 +1038,11 @@ func decode(inst []uint8) {
 		//HLT
 		//
 	default:
-		// NOP
+		// 無効な命令
+		//INTERRUPT 0x7c
+		irq[1] |= 0x1000000000000000
+		//割り込みと通常処理が順番な都合
+		reg[ip] -= InstLength
+		//
 	}
 }
