@@ -1027,8 +1027,8 @@ func decode(inst []uint8) {
 		}
 	case 0x24:
 		//SYSCALL
-		//INTERRUPT 0x7f
-		irq[1] |= 0x8000000000000000
+		//INTERRUPT 0x70
+		irq[1] |= 0x10000
 
 		//割り込みと通常処理が順番な都合
 		reg[ip] -= InstLength
