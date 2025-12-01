@@ -10,6 +10,9 @@ func isExecutable(page uint8) bool {
 			return pageFlag>>3&1 == 1                 //isExecutable
 		} else {
 			//not valid
+			// 0x7d 未マップページ
+			irq[1] |= 0x2000000000000000
+			//
 		}
 	}
 	return true //mmu無効のときは全部許可
@@ -33,20 +36,26 @@ func readMemory(address uint16, length uint8) []uint8 {
 				} else {
 					//not privileged
 					//INTERRUPT
+					// 0x7e
+					irq[1] |= 0x4000000000000000
 				}
 			} else {
 				//not Readable
 				//INTERRUPT
+				// 0x7e
+				irq[1] |= 0x4000000000000000
 			}
 		} else {
 			// Invalid
 			// INTERRUPT
+			// 0x7d
+			irq[1] |= 0x2000000000000000
 		}
 	} else {
 		// MMU OFF
 		return mem[uint(address>>8)*0x100+uint(address&0xff) : uint(address>>8)*0x100+uint(address&0xff)+uint(length)]
 	}
-	return []uint8{0x0}
+	return []uint8{}
 }
 
 func writeMemory(address uint16, data []uint8) {
@@ -68,14 +77,20 @@ func writeMemory(address uint16, data []uint8) {
 				} else {
 					//not privileged
 					//INTERRUPT
+					// 0x7e
+					irq[1] |= 0x4000000000000000
 				}
 			} else {
 				//not Writable
 				//INTERRUPT
+				// 0x7e
+				irq[1] |= 0x4000000000000000
 			}
 		} else {
 			// Invalid
 			// INTERRUPT
+			// 0x7d
+			irq[1] |= 0x2000000000000000
 		}
 	} else {
 		// MMU OFF

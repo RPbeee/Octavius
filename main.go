@@ -243,7 +243,15 @@ func reset() { //Resets all the data
 }
 
 func tick() {
-	decode(readMemory(uint16(reg[cs])*0x100+uint16(reg[ip]), InstLength))
+	if isExecutable(reg[cs]) {
+		instruction := readMemory(uint16(reg[cs])*0x100+uint16(reg[ip]), InstLength)
+		if len(instruction) == int(InstLength) {
+			decode(instruction)
+			return
+		}
+	}
+	// 実行権限がない、または読み込みに失敗したティックは命令を実行せずに直後のinterrupt()に処理を任せる
+	reg[ip] -= InstLength //割込処理と通常処理が順番な都合
 }
 
 func decode(inst []uint8) {
@@ -1038,7 +1046,7 @@ func decode(inst []uint8) {
 		//HLT
 		//
 	default:
-		// 無効な命令
+		// 無効な命令(オペランドが無効な場合はまだ定義できてない。)
 		//INTERRUPT 0x7c
 		irq[1] |= 0x1000000000000000
 		//割り込みと通常処理が順番な都合
