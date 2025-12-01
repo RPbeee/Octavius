@@ -116,7 +116,7 @@ flag: 0xb
 | `0x20` | **CALL** | `CALL Source1 [Source2/Segment/ADDR] [ADDR]` | Call subroutine. |
 | `0x21` | **RET** | `RET [near, far]` | Return from subroutine. |
 | `0x22` | **IRET** | `IRET [NULL] [NULL] [NULL]` | Return from interrupt. |
-| `0x23` | 👑**LST** | `LST [TABLE TYPE] [SEGREG] [REG2]` | Load system table. See **System Tables** below. |
+| `0x23` | 👑**LST** | `LST [TABLE TYPE] [0x0e] [NULL]` | Load system table. See **System Tables** below. |
 | `0x24` | **SYSCALL** | `SYSCALL [NULL] [NUll] [NULL]` | Call system. See **Interruptions** above. |
 | `0xFF` | **HLT** | `HLT [NULL] [NULL] [NULL]` | Halt processor. |
 
