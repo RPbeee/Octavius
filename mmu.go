@@ -38,18 +38,24 @@ func readMemory(address uint16, length uint8) []uint8 {
 					//INTERRUPT
 					// 0x7e
 					irq[1] |= 0x4000000000000000
+					//割り込みと通常処理が順番な都合
+					reg[ip] -= InstLength
 				}
 			} else {
 				//not Readable
 				//INTERRUPT
 				// 0x7e
 				irq[1] |= 0x4000000000000000
+				//割り込みと通常処理が順番な都合
+				reg[ip] -= InstLength
 			}
 		} else {
 			// Invalid
 			// INTERRUPT
 			// 0x7d
 			irq[1] |= 0x2000000000000000
+			//割り込みと通常処理が順番な都合
+			reg[ip] -= InstLength
 		}
 	} else {
 		// MMU OFF
@@ -79,18 +85,24 @@ func writeMemory(address uint16, data []uint8) {
 					//INTERRUPT
 					// 0x7e
 					irq[1] |= 0x4000000000000000
+					//割り込みと通常処理が順番な都合
+					reg[ip] -= InstLength
 				}
 			} else {
 				//not Writable
 				//INTERRUPT
 				// 0x7e
 				irq[1] |= 0x4000000000000000
+				//割り込みと通常処理が順番な都合
+				reg[ip] -= InstLength
 			}
 		} else {
 			// Invalid
 			// INTERRUPT
 			// 0x7d
 			irq[1] |= 0x2000000000000000
+			//割り込みと通常処理が順番な都合
+			reg[ip] -= InstLength
 		}
 	} else {
 		// MMU OFF

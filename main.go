@@ -251,7 +251,6 @@ func tick() {
 		}
 	}
 	// 実行権限がない、または読み込みに失敗したティックは命令を実行せずに直後のinterrupt()に処理を任せる
-	reg[ip] -= InstLength //割込処理と通常処理が順番な都合
 }
 
 func decode(inst []uint8) {
@@ -1045,18 +1044,20 @@ func decode(inst []uint8) {
 		//SYSCALL
 		//INTERRUPT 0x70
 		irq[1] |= 0x1000000000000
-		//割り込みと通常処理が順番な都合
-		reg[ip] -= InstLength
 		//
 	case 0xff:
 		//HLT
-		//
+		if statsReg>>2&1 == 0 {
+			//
+		} else {
+			// NOT PRIVILEGED
+			// 0x7f
+			irq[1] |= 0x8000000000000000
+		}
 	default:
 		// 無効な命令(オペランドが無効な場合はまだ定義できてない。)
 		//INTERRUPT 0x7c
 		irq[1] |= 0x1000000000000000
-		//割り込みと通常処理が順番な都合
-		reg[ip] -= InstLength
 		//
 	}
 }
