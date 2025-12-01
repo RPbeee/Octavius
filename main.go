@@ -898,6 +898,8 @@ func decode(inst []uint8) {
 		} else {
 			// not Privileged
 			// INTERRUPT
+			// 0x7f
+			irq[1] |= 0x8000000000000000
 		}
 	case 0x17:
 		// OUT
@@ -920,6 +922,8 @@ func decode(inst []uint8) {
 		} else {
 			// not Privileged
 			// INTERRUPT
+			// 0x7f
+			irq[1] |= 0x8000000000000000
 		}
 	case 0x18:
 		//JC
@@ -1034,6 +1038,8 @@ func decode(inst []uint8) {
 		} else {
 			// not Privileged
 			// INTERRUPT
+			// 0x7f
+			irq[1] |= 0x8000000000000000
 		}
 	case 0x24:
 		//SYSCALL
