@@ -1023,8 +1023,8 @@ func decode(inst []uint8) {
 	case 0x23:
 		//LST
 		if statsReg>>2&1 == 0 {
-			if 0x0a >= inst[2] && inst[2] >= 0x07 && inst[3] <= 0x0a {
-				addr := readMemory(uint16(reg[inst[2]])*0x100+uint16(reg[inst[3]]), 1)[0]
+			if inst[2] == 0x0c {
+				addr := readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
 				switch inst[1] {
 				case 0x00:
 					// Page Table
