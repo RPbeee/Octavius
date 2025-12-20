@@ -1,4 +1,4 @@
-module 8bit
+module Octavius
 
 go 1.24.4
 
