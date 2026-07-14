@@ -19,7 +19,7 @@ func isExecutable(page uint8) bool {
 }
 
 func readMemory(address uint16, length uint8) []uint8 {
-	if length > 0x100-uint8(address) {
+	if length > uint8(0x100-address&0xff) {
 		// over segment hangup (temporary)
 		log.Fatal("Offset overflow (readMem)")
 	}
@@ -65,7 +65,7 @@ func readMemory(address uint16, length uint8) []uint8 {
 }
 
 func writeMemory(address uint16, data []uint8) {
-	if len(data) > 0x100-int(address&0xff) {
+	if uint16(len(data)) > 0x100-address&0xff {
 		// over segment hangup (temporary)
 		log.Fatal("Offset overflow (writeMem)")
 	}
