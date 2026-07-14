@@ -84,18 +84,18 @@ func readImg() {
 		resetImg()
 		f, err = os.Open("floppy.img")
 		if err != nil {
-			log.Fatal("Failed to open floppy.img after creating.")
+			panic("Failed to open floppy.img after creating.")
 		}
 	}
 	defer f.Close()
 	image := make([]byte, 80*2*18*512)
 	size, err := f.Read(image)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	log.Println("Size:", size)
 	if size != 80*2*18*512 {
-		log.Fatal("File size is not 1.44MiB")
+		panic("File size is not 1.44MiB")
 	}
 	floppy_map = [80 * 2 * 18 * 512]uint8(image)
 }
@@ -103,30 +103,30 @@ func readImg() {
 func saveImg() {
 	f, err := os.Create("floppy.img")
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	defer f.Close()
 	count, err := f.Write(floppy_map[:])
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	if count != 80*2*18*512 {
-		log.Fatal("Image size is not 1.44MiB")
+		panic("Image size is not 1.44MiB")
 	}
 }
 
 func resetImg() {
 	f, err := os.Create("floppy.img")
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	defer f.Close()
 	empty := make([]byte, 80*2*18*512)
 	count, err := f.Write(empty[:])
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	if count != 80*2*18*512 {
-		log.Fatal("Image size is not 1.44MiB")
+		panic("Image size is not 1.44MiB")
 	}
 }

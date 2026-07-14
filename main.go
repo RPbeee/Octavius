@@ -48,14 +48,22 @@ func main() {
 		log.Fatal(err)
 	}
 	if err := screen.Init(); err != nil {
-		log.Fatal(nil)
+		log.Fatal(err)
 	}
-	defer screen.Fini()
-	width, _ := screen.Size()
-	leftWidth := width / 2
+	defer func() {
+		screen.Fini()
+		if r := recover(); r != nil {
+			log.Fatalf("Fatal error: %v", r)
+		}
+	}()
 
-	debugStyle := tcell.StyleDefault.Foreground(tcell.ColorBlack).Background(tcell.ColorGreen)
-	displayStyle := tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorBlack)
+	// Styles
+	styleBorder := tcell.StyleDefault.Foreground(tcell.ColorDarkCyan).Background(tcell.ColorBlack)
+	styleTitle := tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorDarkCyan)
+	styleNormal := tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorBlack)
+	styleLabel := tcell.StyleDefault.Foreground(tcell.ColorLightBlue).Background(tcell.ColorBlack)
+	styleValue := tcell.StyleDefault.Foreground(tcell.ColorYellow).Background(tcell.ColorBlack)
+	styleDisplay := tcell.StyleDefault.Foreground(tcell.ColorLime).Background(tcell.ColorBlack)
 
 	keyCh := make(chan rune, 10)
 	go func() { //keyboard
@@ -67,6 +75,7 @@ func main() {
 					close(keyCh)
 					//Shutdown
 					saveImg()
+					screen.Fini() // Ensure terminal is restored on exit
 					os.Exit(0)
 				} else if r := tev.Rune(); r >= 32 && r <= 127 {
 					irq[0] |= 0x01
@@ -89,35 +98,113 @@ func main() {
 			freq = 1 / ((float64(time.Now().UnixMicro()) - float64(now.UnixMicro())) / 1000000.0)
 		}
 
-		debugLines := []string{
-			fmt.Sprintln("時刻:", now.Format("15:04:05")),
-			fmt.Sprintf("現在の実参照アドレス:%x\n", (uint(reg[cs])*0x100 + uint(reg[ip]))),
-			fmt.Sprintf("レジスタ:%b\n", reg),
-			fmt.Sprintln("メモリ:", mem[uint16(reg[cs])*0x100:uint(reg[cs])*0x100+256]),
-			fmt.Sprintln("VRAM:", mem[uint16(0xfb)*0x100+0:uint(0xfb)*0x100+256]),
-			fmt.Sprintln("CPU freq (Hz):", freq),
+		width, _ := screen.Size()
+
+		// Layout decision (Side-by-side if terminal is wide enough, stacked otherwise)
+		var dispX, dispY, dbgX, dbgY int
+		var useLayout bool // true: Side-by-side, false: Stacked
+		if width >= 105 {
+			useLayout = true
+			dbgX = 1
+			dbgY = 1
+			dispX = 37
+			dispY = 1
+		} else {
+			useLayout = false
+			dispX = 1
+			dispY = 1
+			dbgX = 1
+			dbgY = 19
 		}
-		for y, line := range debugLines {
-			for x, ch := range line {
-				if x >= leftWidth {
-					break
-				}
-				screen.SetContent(x, y, ch, nil, debugStyle)
-			}
-		}
+
+		// 1. Draw Display (64x16 -> 66x18 with border)
+		drawBox(screen, dispX, dispY, displayWidth+2, displayHeight+2, "VRAM DISPLAY (64x16)", styleBorder, styleTitle)
 		for y := 0; y < displayHeight; y++ {
 			for x := 0; x < displayWidth; x++ {
 				addr := 0xfb00 + y*displayWidth + x
 				ch := ' '
 				if addr < len(mem) {
 					ch = rune(mem[addr])
-					if ch < 32 {
+					if ch < 32 || ch > 126 {
 						ch = '.'
 					}
 				}
-				screen.SetContent(x+leftWidth, y, ch, nil, displayStyle)
+				screen.SetContent(dispX+1+x, dispY+1+y, ch, nil, styleDisplay)
 			}
 		}
+
+		// 2. Draw Debug Panel
+		dbgW := 34
+		dbgH := 18
+		if !useLayout {
+			dbgW = 66
+			dbgH = 11
+		}
+
+		drawBox(screen, dbgX, dbgY, dbgW, dbgH, "CPU DEBUG STATUS", styleBorder, styleTitle)
+
+		if useLayout {
+			// Side-by-Side Layout
+			drawString(screen, dbgX+2, dbgY+2, "Time:", styleLabel)
+			drawString(screen, dbgX+8, dbgY+2, now.Format("15:04:05"), styleValue)
+			drawString(screen, dbgX+18, dbgY+2, "Freq:", styleLabel)
+			drawString(screen, dbgX+24, dbgY+2, fmt.Sprintf("%.2fHz", freq), styleValue)
+
+			drawString(screen, dbgX+2, dbgY+4, "Registers:", styleLabel)
+			drawString(screen, dbgX+3, dbgY+5, fmt.Sprintf("AX: %02X  BX: %02X  CX: %02X  DX: %02X", reg[ax], reg[bx], reg[cx], reg[dx]), styleValue)
+			drawString(screen, dbgX+3, dbgY+6, fmt.Sprintf("SP: %02X  BP: %02X  DI: %02X  FL: %02X", reg[sp], reg[bp], reg[di], reg[flag]), styleValue)
+			drawString(screen, dbgX+3, dbgY+7, fmt.Sprintf("CS: %02X  DS: %02X  SS: %02X  IP: %02X", reg[cs], reg[ds], reg[ss], reg[ip]), styleValue)
+
+			physAddr := uint(reg[cs])*0x100 + uint(reg[ip])
+			drawString(screen, dbgX+2, dbgY+9, "CS:IP (Phys):", styleLabel)
+			drawString(screen, dbgX+16, dbgY+9, fmt.Sprintf("%02X:%02X (%04X)", reg[cs], reg[ip], physAddr), styleValue)
+
+			drawString(screen, dbgX+2, dbgY+11, "Code Dump (CS:IP):", styleLabel)
+			baseAddr := uint(reg[cs])*0x100 + uint(reg[ip])
+			for i := 0; i < 4; i++ {
+				addr := baseAddr + uint(i*4)
+				b := make([]byte, 4)
+				for j := 0; j < 4; j++ {
+					a := addr + uint(j)
+					if a < uint(len(mem)) {
+						b[j] = mem[a]
+					}
+				}
+				dumpStr := fmt.Sprintf(" %04X: %02X %02X %02X %02X", addr&0xFFFF, b[0], b[1], b[2], b[3])
+				drawString(screen, dbgX+2, dbgY+12+i, dumpStr, styleNormal)
+			}
+		} else {
+			// Stacked Layout
+			physAddr := uint(reg[cs])*0x100 + uint(reg[ip])
+			drawString(screen, dbgX+2, dbgY+2, "Time:", styleLabel)
+			drawString(screen, dbgX+8, dbgY+2, now.Format("15:04:05"), styleValue)
+			drawString(screen, dbgX+18, dbgY+2, "Freq:", styleLabel)
+			drawString(screen, dbgX+24, dbgY+2, fmt.Sprintf("%.2fHz", freq), styleValue)
+			drawString(screen, dbgX+38, dbgY+2, "CS:IP:", styleLabel)
+			drawString(screen, dbgX+45, dbgY+2, fmt.Sprintf("%02X:%02X (%04X)", reg[cs], reg[ip], physAddr), styleValue)
+
+			drawString(screen, dbgX+2, dbgY+4, fmt.Sprintf("AX:%02X BX:%02X CX:%02X DX:%02X SP:%02X BP:%02X DI:%02X FL:%02X",
+				reg[ax], reg[bx], reg[cx], reg[dx], reg[sp], reg[bp], reg[di], reg[flag]), styleValue)
+			drawString(screen, dbgX+2, dbgY+5, fmt.Sprintf("CS:%02X DS:%02X SS:%02X IP:%02X",
+				reg[cs], reg[ds], reg[ss], reg[ip]), styleValue)
+
+			drawString(screen, dbgX+2, dbgY+7, "Code Dump:", styleLabel)
+			baseAddr := uint(reg[cs])*0x100 + uint(reg[ip])
+			dumpLine := ""
+			for i := 0; i < 4; i++ {
+				addr := baseAddr + uint(i*4)
+				b := make([]byte, 4)
+				for j := 0; j < 4; j++ {
+					a := addr + uint(j)
+					if a < uint(len(mem)) {
+						b[j] = mem[a]
+					}
+				}
+				dumpLine += fmt.Sprintf(" %04X:%02X%02X%02X%02X", addr&0xFFFF, b[0], b[1], b[2], b[3])
+			}
+			drawString(screen, dbgX+13, dbgY+7, dumpLine, styleNormal)
+		}
+
 		screen.Show()
 		now = time.Now()
 
@@ -127,7 +214,7 @@ func main() {
 		interrupt()
 
 		reg[ip] += InstLength
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
@@ -846,7 +933,7 @@ func decode(inst []uint8) {
 		switch {
 		case inst[1] < 0x0c:
 			reg[inst[1]]++
-			if reg[inst[1]]+1 == 0 {
+			if reg[inst[1]] == 0 {
 				//CF
 				reg[flag] |= 0b10
 			}
@@ -1059,5 +1146,35 @@ func decode(inst []uint8) {
 		//INTERRUPT 0x7c
 		irq[1] |= 0x1000000000000000
 		//
+	}
+}
+
+func drawString(screen tcell.Screen, x, y int, str string, style tcell.Style) {
+	for i, r := range str {
+		screen.SetContent(x+i, y, r, nil, style)
+	}
+}
+
+func drawBox(screen tcell.Screen, x, y, w, h int, title string, borderStyle, titleStyle tcell.Style) {
+	// 角
+	screen.SetContent(x, y, '┌', nil, borderStyle)
+	screen.SetContent(x+w-1, y, '┐', nil, borderStyle)
+	screen.SetContent(x, y+h-1, '└', nil, borderStyle)
+	screen.SetContent(x+w-1, y+h-1, '┘', nil, borderStyle)
+
+	// 横線
+	for col := x + 1; col < x+w-1; col++ {
+		screen.SetContent(col, y, '─', nil, borderStyle)
+		screen.SetContent(col, y+h-1, '─', nil, borderStyle)
+	}
+	// 縦線
+	for row := y + 1; row < y+h-1; row++ {
+		screen.SetContent(row, x, '│', nil, borderStyle)
+		screen.SetContent(row, x+w-1, '│', nil, borderStyle)
+	}
+
+	// タイトル
+	if title != "" {
+		drawString(screen, x+2, y, " "+title+" ", titleStyle)
 	}
 }

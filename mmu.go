@@ -1,7 +1,5 @@
 package main
 
-import "log"
-
 func isExecutable(page uint8) bool {
 	if statsReg>>1&1 == 1 { //mmu is enabled
 		pageFlag := mem[uint(ptReg)*0x100+uint(page)]
@@ -19,9 +17,9 @@ func isExecutable(page uint8) bool {
 }
 
 func readMemory(address uint16, length uint8) []uint8 {
-	if length > uint8(0x100-address&0xff) {
+	if uint16(length) > 0x100-address&0xff {
 		// over segment hangup (temporary)
-		log.Fatal("Offset overflow (readMem)")
+		panic("Offset overflow (readMem)")
 	}
 	if statsReg>>1&1 == 1 { //mmu is enabled
 		// MMU ON
@@ -67,7 +65,7 @@ func readMemory(address uint16, length uint8) []uint8 {
 func writeMemory(address uint16, data []uint8) {
 	if uint16(len(data)) > 0x100-address&0xff {
 		// over segment hangup (temporary)
-		log.Fatal("Offset overflow (writeMem)")
+		panic("Offset overflow (writeMem)")
 	}
 	if statsReg>>1&1 == 1 {
 		// MMU ON
