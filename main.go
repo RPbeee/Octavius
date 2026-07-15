@@ -1,7 +1,7 @@
 package main
 
 import (
-	"flag"
+	f "flag"
 	"fmt"
 	"log"
 	"os"
@@ -45,7 +45,7 @@ var freq float64
 var emuFreq uint
 
 func main() {
-	flag.UintVar(&emuFreq, "freq", 10, "シミュレーション速度(Hz)を指定")
+	f.UintVar(&emuFreq, "freq", 10, "シミュレーション速度(Hz)を指定")
 	reset()
 	screen, err := tcell.NewScreen()
 	if err != nil {
