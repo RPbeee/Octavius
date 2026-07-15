@@ -102,7 +102,7 @@ func parseOperand(tok string, syms map[string]int) (operand, error) {
 
 	// Register
 	if r, ok := regNames[strings.ToLower(tok)]; ok {
-		return operand{kind: kReg, regNum: r}, nil
+		return operand{kind: kReg, regNum: r, far: far, rel: rel}, nil
 	}
 
 	// Immediate / label

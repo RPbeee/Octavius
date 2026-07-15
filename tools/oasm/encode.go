@@ -472,9 +472,15 @@ func encJmp2(op uint8, ops []operand, curAddr int) ([]uint8, error) {
 			}
 			return []uint8{op, 0xf0, b(o.imm >> 8), b(o.imm)}, nil
 		case kImm:
-			// Near jump to a label/address within the current segment:
-			// use absolute-offset mode (1f) with the low byte of the target.
-			return []uint8{op, 0x1f, b(o.imm), 0}, nil
+			// Jump/call to an absolute address. If the target lies in the
+			// same 256-byte segment as this instruction, a near jump (mode
+			// 1f: low byte only, cs unchanged) is enough. Otherwise emit a
+			// far jump (mode 2f) that also loads cs, so control transfers
+			// across segment boundaries correctly.
+			if (o.imm >> 8) == (curAddr >> 8) {
+				return []uint8{op, 0x1f, b(o.imm), 0}, nil
+			}
+			return []uint8{op, 0x2f, b(o.imm >> 8), b(o.imm)}, nil
 		}
 	}
 	// far seg:off  ->  JMP far <seg>, <off>

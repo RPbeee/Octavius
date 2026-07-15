@@ -213,7 +213,7 @@ func main() {
 		keyTick()
 		interrupt()
 
-		reg[ip] += InstLength
+		advancePC()
 		time.Sleep(2 * time.Millisecond)
 	}
 }
@@ -261,6 +261,28 @@ func reset() { //Resets all the data
 	})
 	irq = [2]uint64{}
 	floppyInit()
+}
+
+// pc16 returns the current program counter as a 16-bit cs:ip value.
+func pc16() uint16 {
+	return uint16(reg[cs])*0x100 + uint16(reg[ip])
+}
+
+// advancePC moves to the next instruction, carrying ip into cs so execution
+// crosses 256-byte segment boundaries linearly instead of wrapping at ip=0xff.
+func advancePC() {
+	next := pc16() + uint16(InstLength)
+	reg[cs] = uint8(next >> 8)
+	reg[ip] = uint8(next)
+}
+
+// setNext points execution at `target` (a full cs:ip address). It stores
+// target-InstLength so the advancePC() at the end of the main loop lands
+// exactly on target. All control-flow instructions go through here.
+func setNext(target uint16) {
+	v := target - uint16(InstLength)
+	reg[cs] = uint8(v >> 8)
+	reg[ip] = uint8(v)
 }
 
 func tick() {
@@ -493,34 +515,13 @@ func decode(inst []uint8) {
 				reg[inst[1]] = reg[inst[1]] ^ inst[3]
 			}
 		case inst[1] == 0x0c:
-			switch {
-			case inst[2] < 0x0c:
-			case inst[2] < 0x0c:
-				//register
-				reg[inst[1]] = reg[inst[1]] ^ reg[inst[2]]
-			case inst[2] == 0x0c:
-				//ds* 0x100+bx
-				reg[inst[1]] = reg[inst[1]] ^ readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
-			case inst[2] == 0x0d:
-				//ss* 0x100+bp
-				reg[inst[1]] = reg[inst[1]] ^ readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
-			case inst[2] == 0x0e:
-				//immd addr
-				reg[inst[1]] = reg[inst[1]] ^ readMemory(uint16(reg[ds])*0x100+uint16(inst[3]), 1)[0]
-			case inst[2] == 0x0f:
-				//immd
-				reg[inst[1]] = reg[inst[1]] ^ inst[3]
-			}
-		case inst[1] == 0x0c:
 			//ds* 0x100+bx
 			switch {
 			case inst[2] < 0x0c:
 				//register
-				// mem[uint16(reg[ds])*0x100+uint16(reg[bx])] = mem[uint16(reg[ds])*0x100+uint16(reg[bx])] ^ reg[inst[2]]
 				writeMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] ^ reg[inst[2]]})
 			case inst[2] == 0x0f:
 				//immd
-				// mem[uint16(reg[ds])*0x100+uint16(reg[bx])] = mem[uint16(reg[ds])*0x100+uint16(reg[bx])] ^ inst[3]
 				writeMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] ^ inst[3]})
 			}
 		case inst[1] == 0x0d:
@@ -528,10 +529,10 @@ func decode(inst []uint8) {
 			switch {
 			case inst[2] < 0x0c:
 				//register
-				writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] ^ reg[inst[2]]})
+				writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0] ^ reg[inst[2]]})
 			case inst[2] == 0x0f:
 				//immd
-				writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] ^ inst[3]})
+				writeMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), []uint8{readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0] ^ inst[3]})
 			}
 		}
 	case 0x7:
@@ -803,64 +804,78 @@ func decode(inst []uint8) {
 		// JMP
 		switch {
 		case inst[1] < 0x0c:
-			reg[ip] = reg[inst[1]] - 4
+			// near register: keep cs, ip = reg
+			setNext(uint16(reg[cs])*0x100 + uint16(reg[inst[1]]))
+		case 0x10 <= inst[1] && inst[1] < 0x1c:
+			// far register pair: cs = reg[inst1-0x10], ip = reg[inst2-0x10]
+			if 0x10 <= inst[2] && inst[2] < 0x1c {
+				setNext(uint16(reg[inst[1]-0x10])*0x100 + uint16(reg[inst[2]-0x10]))
+			}
 		case inst[1] == 0x0f:
-			reg[ip] = uint8(int(reg[ip])+int(int8(inst[2]))) - 4
+			// relative to the current instruction
+			setNext(uint16(int(pc16()) + int(int8(inst[2]))))
 		case inst[1] == 0x1f:
-			reg[ip] = inst[2] - 4
+			// near absolute: keep cs, ip = imm
+			setNext(uint16(reg[cs])*0x100 + uint16(inst[2]))
 		case inst[1] == 0x2f:
-			reg[cs] = inst[2]
-			reg[ip] = inst[3] - 4
+			setNext(uint16(inst[2])*0x100 + uint16(inst[3]))
 		case (inst[1] & 0x0f) == 0x0c:
+			newIP := readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
+			newCS := reg[cs]
 			if inst[1]&0xf0 != 0 {
-				reg[cs] = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx])+1, 1)[0]
+				newCS = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx])+1, 1)[0]
 			}
-			reg[ip] = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] - 4
+			setNext(uint16(newCS)*0x100 + uint16(newIP))
 		case (inst[1] & 0x0f) == 0x0d:
+			newIP := readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
+			newCS := reg[cs]
 			if inst[1]&0xf0 != 0 {
-				reg[cs] = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp])+1, 1)[0]
+				newCS = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp])+1, 1)[0]
 			}
-			reg[ip] = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0] - 4
+			setNext(uint16(newCS)*0x100 + uint16(newIP))
 		case (inst[1] & 0x0f) == 0x0e:
+			newIP := readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0]
+			newCS := reg[cs]
 			if inst[1]&0xf0 != 0 {
-				reg[cs] = readMemory(uint16(reg[ds])*0x100+uint16(inst[2])+1, 1)[0]
+				newCS = readMemory(uint16(reg[ds])*0x100+uint16(inst[2])+1, 1)[0]
 			}
-			reg[ip] = readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0] - 4
+			setNext(uint16(newCS)*0x100 + uint16(newIP))
 		case inst[1] == 0xf0:
-			reg[ip] = readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0] - 4
+			setNext(uint16(reg[cs])*0x100 + uint16(readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0]))
 		case inst[1] == 0xf1:
-			reg[cs] = readMemory(uint16(inst[2])*0x100+uint16(inst[3])+1, 1)[0]
-			reg[ip] = readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0] - 4
+			newCS := readMemory(uint16(inst[2])*0x100+uint16(inst[3])+1, 1)[0]
+			newIP := readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0]
+			setNext(uint16(newCS)*0x100 + uint16(newIP))
 		}
 	case 0xf:
 		// JZ
 		if reg[flag]&0x01 != 0 {
-			reg[ip] = uint8(int(reg[ip])+int(int8(inst[1]))) - 4
+			setNext(uint16(int(pc16()) + int(int8(inst[1]))))
 		}
 	case 0x10:
 		// JNZ
 		if reg[flag]&0x01 == 0 {
-			reg[ip] = uint8(int(reg[ip])+int(int8(inst[1]))) - 4
+			setNext(uint16(int(pc16()) + int(int8(inst[1]))))
 		}
 	case 0x11:
 		// JA
 		if reg[flag]&0b11 == 0 {
-			reg[ip] = uint8(int(reg[ip])+int(int8(inst[1]))) - 4
+			setNext(uint16(int(pc16()) + int(int8(inst[1]))))
 		}
 	case 0x12:
 		// JBE
 		if reg[flag]&0b11 != 0 {
-			reg[ip] = uint8(int(reg[ip])+int(int8(inst[1]))) - 4
+			setNext(uint16(int(pc16()) + int(int8(inst[1]))))
 		}
 	case 0x13:
 		// JG
 		if reg[flag]&0b1 == 0 && reg[flag]&0b1000>>3 == reg[flag]&0b100>>2 {
-			reg[ip] = uint8(int(reg[ip])+int(int8(inst[1]))) - 4
+			setNext(uint16(int(pc16()) + int(int8(inst[1]))))
 		}
 	case 0x14:
 		// JLE
 		if reg[flag]&0b1 != 0 || reg[flag]&0b1000>>3 != reg[flag]&0b100>>2 {
-			reg[ip] = uint8(int(reg[ip])+int(int8(inst[1]))) - 4
+			setNext(uint16(int(pc16()) + int(int8(inst[1]))))
 		}
 	case 0x15:
 		// INC
@@ -948,94 +963,86 @@ func decode(inst []uint8) {
 	case 0x18:
 		//JC
 		if reg[flag]&0x02 != 0 {
-			reg[ip] = uint8(int(reg[ip])+int(int8(inst[1]))) - 4
+			setNext(uint16(int(pc16()) + int(int8(inst[1]))))
 		}
 	case 0x19:
 		//JNC
 		if reg[flag]&0x02 == 0 {
-			reg[ip] = uint8(int(reg[ip])+int(int8(inst[1]))) - 4
+			setNext(uint16(int(pc16()) + int(int8(inst[1]))))
 		}
 	case 0x20:
-		//CALL
+		//CALL — unified far convention: every call pushes the return cs:ip,
+		//and every RET pops cs:ip. The addressing mode only decides the target
+		//(near forms keep the current cs; far forms load a new cs), so a plain
+		//RET always matches regardless of how the call was written.
+		newCS := reg[cs] // near default: stay in the current segment
+		newIP := reg[ip]
+		call := true
 		switch {
 		case inst[1] < 0x0c:
 			//near register
-			push([]uint8{0x00, 0x00, 0x00, 0x00}) //inst=>0x00,0x00(ip)の値-4,0x00,0x00
-			reg[ip] = reg[inst[1]]
+			newIP = reg[inst[1]]
 		case 0x10 <= inst[1] && inst[1] < 0x1c:
-			//far register
+			//far register pair
 			if 0x10 <= inst[2] && inst[2] < 0x1c {
-				push([]uint8{0x00, 0x00, 0x00, 0x00})
-				push([]uint8{0x00, 0x07, 0x00, 0x00}) //PUSH cs
-				reg[ip] = reg[inst[2]-0x10]
-				reg[cs] = reg[inst[1]-0x10]
+				newCS = reg[inst[1]-0x10]
+				newIP = reg[inst[2]-0x10]
+			} else {
+				call = false
 			}
 		case inst[1] == 0x0c:
-			//near	mem	ds
-			push([]uint8{0x00, 0x00, 0x00, 0x00}) //inst=>0x00,0x00(ip)の値-4,0x00,0x00
-			reg[ip] = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0] - 4
+			//near mem ds
+			newIP = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
 		case inst[1] == 0x1c:
-			//far	mem	ds
-			push([]uint8{0x00, 0x00, 0x00, 0x00})
-			push([]uint8{0x00, 0x07, 0x00, 0x00}) //PUSH cs
-			reg[ip] = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx])+4, 1)[0] - 4
-			reg[cs] = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
+			//far mem ds
+			newIP = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx])+4, 1)[0]
+			newCS = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
 		case inst[1] == 0x0d:
-			//near  mem ss
-			push([]uint8{0x00, 0x00, 0x00, 0x00}) //inst=>0x00,0x00(ip)の値-4,0x00,0x00
-			reg[ip] = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0] - 4
+			//near mem ss
+			newIP = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
 		case inst[1] == 0x1d:
-			//far	mem ss
-			push([]uint8{0x00, 0x00, 0x00, 0x00})
-			push([]uint8{0x00, 0x07, 0x00, 0x00}) //PUSH cs
-			reg[ip] = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp])+4, 1)[0] - 4
-			reg[cs] = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
+			//far mem ss
+			newIP = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp])+4, 1)[0]
+			newCS = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
 		case inst[1] == 0x0e:
-			//near	mem imm
-			push([]uint8{0x00, 0x00, 0x00, 0x00}) //inst=>0x00,0x00(ip)の値-4,0x00,0x00
-			reg[ip] = readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0] - 4
+			//near mem imm
+			newIP = readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0]
 		case inst[1] == 0x1e:
-			//far	mem imm
-			push([]uint8{0x00, 0x00, 0x00, 0x00})
-			push([]uint8{0x00, 0x07, 0x00, 0x00}) //PUSH cs
-			reg[ip] = readMemory(uint16(reg[ds])*0x100+uint16(inst[2])+4, 1)[0] - 4
-			reg[cs] = readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0]
+			//far mem imm
+			newIP = readMemory(uint16(reg[ds])*0x100+uint16(inst[2])+4, 1)[0]
+			newCS = readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0]
 		case inst[1] == 0x0f:
-			//short	imm
-			push([]uint8{0x00, 0x00, 0x00, 0x00}) //inst=>0x00,0x00(ip)の値-4,0x00,0x00
-			reg[ip] = uint8(int(reg[ip])+int(int8(inst[2]))) - 4
+			//short imm (relative)
+			target := uint16(int(pc16()) + int(int8(inst[2])))
+			newCS = uint8(target >> 8)
+			newIP = uint8(target)
 		case inst[1] == 0x1f:
-			//near	imm
-			push([]uint8{0x00, 0x00, 0x00, 0x00}) //inst=>0x00,0x00(ip)の値-4,0x00,0x00
-			reg[ip] = inst[2] - 4
+			//near imm
+			newIP = inst[2]
 		case inst[1] == 0x2f:
-			//far 	imm
-			push([]uint8{0x00, 0x00, 0x00, 0x00})
-			push([]uint8{0x00, 0x07, 0x00, 0x00}) //PUSH cs
-			reg[ip] = inst[3] - 4
-			reg[cs] = inst[2]
+			//far imm
+			newCS = inst[2]
+			newIP = inst[3]
 		case inst[1] == 0xf0:
-			//near	memimm2
-			push([]uint8{0x00, 0x00, 0x00, 0x00})
-			reg[ip] = readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0] - 4
+			//near memimm2
+			newIP = readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0]
 		case inst[1] == 0xf1:
-			//far 	memimm2
-			push([]uint8{0x00, 0x00, 0x00, 0x00})
+			//far memimm2
+			newIP = readMemory(uint16(inst[2])*0x100+uint16(inst[3])+4, 1)[0]
+			newCS = readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0]
+		default:
+			call = false
+		}
+		if call {
+			push([]uint8{0x00, 0x00, 0x00, 0x00}) //PUSH ip (return marker)
 			push([]uint8{0x00, 0x07, 0x00, 0x00}) //PUSH cs
-			reg[ip] = readMemory(uint16(inst[2])*0x100+uint16(inst[3])+4, 1)[0] - 4
-			reg[cs] = readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0]
+			setNext(uint16(newCS)*0x100 + uint16(newIP))
 		}
 	case 0x21:
-		//RET
-		switch inst[1] {
-		case 0x00:
-			//near 	return
-			pop([]uint8{0x00, 0x00, 0x00, 0x00}) //inst=>0x00,0x00(ip),0x00,0x00
-		case 0x01:
-			//far 	return
-			pop([]uint8{0x00, 0x07, 0x00, 0x00}) //inst=>0x00,0x07(cs),0x00,0x00
-			pop([]uint8{0x00, 0x00, 0x00, 0x00}) //inst=>0x00,0x00(ip),0x00,0x00
-		}
+		//RET — unified: always pop cs:ip. The operand (RET 0 / RET 1) is
+		//accepted for backward compatibility but no longer changes behavior.
+		pop([]uint8{0x00, 0x07, 0x00, 0x00}) //POP cs
+		pop([]uint8{0x00, 0x00, 0x00, 0x00}) //POP ip
 	case 0x22:
 		//IRET
 		pop([]uint8{0x00, 0x0b, 0x00, 0x00}) //POP flags

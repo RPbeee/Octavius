@@ -87,7 +87,7 @@ CMP  a, b
 INC  src
 IN   reg, port           ; port is a register or immediate (>=0x0c)
 OUT  port, reg
-CALL target      RET [0|1]      ; RET 1 = far
+CALL target      RET            ; RET always restores cs:ip (see note)
 JMP  target                     ; see jump forms
 JZ JNZ JA JBE JG JLE JC JNC  target   ; conditional, relative
 IRET      SYSCALL      HLT
@@ -99,7 +99,7 @@ LST 0|1, [bx]            ; 0=page table, 1=IDT
 | Form                | Encoding / meaning                               |
 | ------------------- | ------------------------------------------------ |
 | `JMP ax`            | near, address = register                         |
-| `JMP label`         | near, absolute offset (same segment)             |
+| `JMP label`         | absolute; near if the target is in the same 256B segment as the jump, else auto far (loads cs:ip) |
 | `JMP rel label`     | near, PC-relative (`±127`, position-independent) |
 | `JMP far 0x7c, 0`   | far, `cs=0x7c, ip=0`                             |
 | `JMP far ds, bx`    | far, from register pair                          |
@@ -109,6 +109,12 @@ LST 0|1, [bx]            ; 0=page table, 1=IDT
 
 Conditional jumps are always relative: `JZ label` (to a label) or a raw
 displacement like `JZ rel $+8`.
+
+`CALL`/`RET` use a single convention: every `CALL` pushes the return `cs:ip`
+and every `RET` pops it, so a plain `RET` returns correctly whether the call
+stayed in the same segment or crossed into another. You don't choose near vs
+far. (`RET 0` / `RET 1` still assemble, for backward compatibility, but behave
+identically.)
 
 ## Example
 
