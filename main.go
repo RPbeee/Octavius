@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -41,7 +42,10 @@ var halting bool
 var now time.Time
 var freq float64
 
+var emuFreq uint
+
 func main() {
+	flag.UintVar(&emuFreq, "freq", 10, "シミュレーション速度(Hz)を指定")
 	reset()
 	screen, err := tcell.NewScreen()
 	if err != nil {
@@ -214,7 +218,7 @@ func main() {
 		interrupt()
 
 		advancePC()
-		time.Sleep(2 * time.Millisecond)
+		time.Sleep(time.Second / time.Duration(emuFreq))
 	}
 }
 
