@@ -46,6 +46,7 @@ var emuFreq uint
 
 func main() {
 	f.UintVar(&emuFreq, "freq", 10, "シミュレーション速度(Hz)を指定")
+	f.Parse()
 	reset()
 	screen, err := tcell.NewScreen()
 	if err != nil {
