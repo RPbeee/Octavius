@@ -59,6 +59,16 @@ void main() {
   pointers `T*`, arrays `T a[N]`, and `struct`. All arithmetic is computed as
   16-bit (C-style integer promotion); a `char` is zero-extended when read and
   truncated to its low byte when stored.
+- **`unsigned` / `signed`**: `unsigned int` and `unsigned char` (and bare
+  `unsigned`, meaning `unsigned int`) make the relational operators
+  `< > <= >=` compare **unsigned**. `signed` is accepted and is the default.
+  (Unsignedness is a property of a declared variable; it is not tracked through
+  intermediate arithmetic.)
+- **`typedef`**: `typedef <type> Name;` introduces a type alias usable wherever
+  a type is expected, e.g. `typedef char* str; str s;`.
+- **`enum`**: `enum Tag { A, B = 5, C };` defines integer constants (values
+  auto-increment, an `=` sets the next value). An `enum` type is a plain `int`;
+  the constants are compile-time integers and may appear in `switch` labels.
 - **Structs**: define at top level with `struct Tag { int a; char b; ... };`
   (fields are packed, no alignment padding). Declare `struct Tag v;`,
   `struct Tag *p;`, `struct Tag a[N];`; access fields with `v.a` and `p->a`
@@ -82,19 +92,32 @@ void main() {
   constant.
 - **Globals and locals**: `int x;`, `int y = 5;`, `char c;`, `int v[4];`.
 - **Statements**: declaration, assignment, `if` / `else` / `else if`, `while`,
-  `for (init; cond; post)`, `break`, `continue`, `return`, expression statement,
-  `{ … }` blocks.
+  `do { … } while (cond)`, `for (init; cond; post)`, `switch` (with `case`,
+  `default`, fall-through, and `break`), `break`, `continue`, `return`,
+  expression statement, `{ … }` blocks.
 - **Operators**: `+ - * / % | & ^ << >>`, comparisons `== != < > <= >=`,
-  logical `&& ||` (short-circuit), unary `- ~ ! * &`, `sizeof`, subscript `[]`,
-  member `.` / `->`, assignment `=`, parentheses. Comparisons yield `1`/`0`. Relational
+  logical `&& ||` (short-circuit), unary `- ~ ! * &`, pre/post `++` / `--`,
+  the conditional `?:`, `sizeof`, subscript `[]`,
+  member `.` / `->`, assignment `=` and compound assignment
+  `+= -= *= /= %= &= |= ^= <<= >>=`, parentheses. (A compound assignment
+  `a op= b` evaluates `a` twice, so avoid a side-effecting subscript there.)
+  Comparisons yield `1`/`0`. Relational
   `< > <= >=` are **signed** for integers (unsigned for pointers); `==` `!=` are
   sign-agnostic. `*` is 16-bit (mod 65536); `/ %` are **unsigned** 16-bit
   software routines (the CPU has no multiply/divide); dividing by zero yields
   quotient `0`, remainder = the dividend. Shift counts must be constants.
 - **Functions**: any number of `int`/`char`/pointer parameters, 16-bit return
   value.
-- **Built-in**: `putc(pos, ch)` writes byte `ch` to video text RAM cell `pos`
-  (segment `0xfb`). This is how you produce visible output.
+- **Built-ins**:
+  - `putc(pos, ch)` writes byte `ch` to video text RAM cell `pos`
+    (segment `0xfb`). This is how you produce visible output.
+  - `__out(port, value)` writes the low byte of `value` to I/O `port`, and
+    `__in(port)` reads a byte from `port` (zero-extended to 16-bit). A constant
+    `port` uses the immediate instruction form. These are the raw `OUT`/`IN`
+    instructions — device drivers (floppy, keyboard, …) are written on top of
+    them in ordinary `occ` code, e.g. in a header. Arbitrary memory-mapped
+    addresses need no built-in: assign the linear address to a pointer
+    (`char *v = 0xfb00; *v = ch;`).
 - **Comments**: `//` and `/* … */`.
 
 ## Preprocessor
@@ -107,17 +130,32 @@ A minimal preprocessor runs before parsing:
 #define VRAM  0xfb     // object-like macro: VRAM is replaced by 0xfb
 #define STAR  '*'
 #define WIDTH (8 + 8)  // the replacement can be several tokens
+#define ADD(a, b) ((a) + (b))   // function-like macro
 
-void main() { putc(0, STAR); }
+#ifdef DEBUG
+#define TRACE(x) putc(0, x)
+#else
+#define TRACE(x)
+#endif
+
+void main() { putc(0, STAR); putc(1, ADD(2, 3) + '0'); }
 ```
 
-- `#define NAME tokens…` — object-like macros only. Every later use of `NAME`
-  is replaced by its tokens (macros in the replacement expand too; self-
-  reference is left alone). Function-like macros `F(x)` and `#undef` are not
-  supported.
+- `#define NAME tokens…` — object-like macro: every later use of `NAME` is
+  replaced by its tokens (macros in the replacement expand too; self-reference
+  is left alone).
+- `#define NAME(a, b) tokens…` — function-like macro. `(` must follow the name
+  immediately; arguments are fully macro-expanded before substitution. (Because
+  the lexer discards whitespace, an object-like macro whose replacement is a
+  parenthesised identifier list, e.g. `#define G (x)`, is misread as
+  function-like — write such values without the leading `(` touching the name,
+  as in `#define WIDTH (8 + 8)`, which is safe.) `#` / `##` are not supported.
+- `#undef NAME` — removes a macro definition.
+- `#ifdef NAME` / `#ifndef NAME` / `#else` / `#endif` — conditional compilation,
+  nestable. (`#if` with an expression and `#elif` are not supported.)
 - `#include "file"` — inlines another file, resolved relative to the including
-  file. Include cycles are detected and rejected.
-- No `#ifdef` / conditional compilation.
+  file. Include cycles are detected and rejected. `#include` is spliced before
+  the conditional pass, so it is **not** suppressed by an enclosing `#ifdef`.
 - Directives must be on their own line. (Line numbers in error messages are
   relative to the fully-included source.)
 
@@ -130,8 +168,16 @@ These come from the hardware, and are the natural next things to add:
   routines the compiler adds only when used.
 - **No multi-dimensional arrays, pointer − pointer, unions, whole-struct
   assignment, or struct-by-value parameters** yet.
-- **Not reentrant / no recursion**: parameters and locals are statically
-  allocated, one slot per name, so a function calling itself would clobber them.
+- **Recursion is supported but shallow.** Parameters and locals are statically
+  allocated (one slot per name), so a call to a function that can reach itself in
+  the call graph (direct or mutual recursion) saves that function's whole frame
+  on the hardware stack and restores it on return. Because `sp` is 8-bit, the
+  stack is a single **256-byte** segment shared with expression temporaries and
+  return addresses, so only a modest recursion depth fits before it overflows
+  (there is no overflow check). One consequence of the static slots: taking
+  `&local` and passing it *into* a deeper activation that writes through it does
+  not propagate back (the slot is saved/restored around the call). Ordinary
+  by-value recursion (factorial, Fibonacci, tree walks) works.
 - **Variables share one 256-byte data segment** (`int`/pointer take 2 bytes,
   `char` 1, an array N×element); the top 16 bytes are reserved for runtime
   scratch, leaving ~240 bytes. Pointers can still *point* anywhere in the 64 KiB
@@ -147,7 +193,11 @@ These come from the hardware, and are the natural next things to add:
 - Variables are statically allocated in data segment `0x10` (`ds:imm`); the
   16-bit math helpers use scratch at `0xf0`–`0xff`.
 - The stack is at `ss=0x70`, `sp=0xff`; `CALL`/`RET` and expression temporaries
-  use it (each 16-bit temporary is two 1-byte pushes).
+  use it (each 16-bit temporary is two 1-byte pushes). A call to a recursive
+  function also pushes that function's frame bytes (`PUSH [addr]`) before the
+  call and pops them back (`POP [addr]`) after, so a nested activation can reuse
+  the same static slots. Non-recursive calls skip this and write arguments
+  straight into the parameter slots.
 - A pointer value is the 16-bit linear address `segment*256 + offset`. Because
   the segment granularity (256) and offset width (8 bits) line up exactly, the
   16-bit accumulator *is* the pointer, `p + i` is plain 16-bit addition that

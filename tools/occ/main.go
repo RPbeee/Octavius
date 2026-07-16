@@ -224,20 +224,31 @@ func scanTokens(src string, startLine int) []token {
 			push(tIdent, src[i:j], 0)
 			i = j
 		default:
-			// multi-char operators first
+			// three-char operators first, then two-char, then one-char.
+			three := ""
+			if i+2 < n {
+				three = src[i : i+3]
+			}
+			switch three {
+			case "<<=", ">>=":
+				push(tPunct, three, 0)
+				i += 3
+				continue
+			}
 			two := ""
 			if i+1 < n {
 				two = src[i : i+2]
 			}
 			switch two {
-			case "==", "!=", "<=", ">=", "<<", ">>", "&&", "||", "->":
+			case "==", "!=", "<=", ">=", "<<", ">>", "&&", "||", "->",
+				"++", "--", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=":
 				push(tPunct, two, 0)
 				i += 2
 				continue
 			}
 			switch c {
 			case '#',
-				'+', '-', '*', '/', '%', '&', '|', '^', '~', '!',
+				'+', '-', '*', '/', '%', '&', '|', '^', '~', '!', '?', ':',
 				'<', '>', '=', '(', ')', '{', '}', '[', ']', '.', ';', ',':
 				push(tPunct, string(c), 0)
 				i++
@@ -301,11 +312,41 @@ func assemble(path string, stack []string) string {
 	return out.String()
 }
 
-// preprocess consumes raw tokens, records object-like #define macros, expands
-// macro uses, drops directive lines, and appends the final tEOF.
+// macro is a recorded #define: object-like (isFunc false) or function-like with
+// a parameter list.
+type macro struct {
+	isFunc bool
+	params []string
+	body   []token
+}
+
+// preprocess consumes raw tokens, records #define macros (object- and
+// function-like), applies #ifdef/#ifndef/#else/#endif and #undef, expands macro
+// uses, drops directive lines, and appends the final tEOF.
 func preprocess(raw []token) []token {
-	defines := map[string][]token{}
+	defines := map[string]macro{}
 	var out []token
+	var run []token // pending emitted tokens, expanded at each directive boundary
+
+	// Conditional-compilation frames. `active` is whether this branch emits,
+	// `taken` whether some branch already did, `parent` the emit state outside.
+	type condFrame struct{ active, taken, parent bool }
+	var conds []condFrame
+	emitting := func() bool {
+		for _, c := range conds {
+			if !c.active {
+				return false
+			}
+		}
+		return true
+	}
+	flush := func() {
+		if len(run) > 0 {
+			out = append(out, expandTokens(run, defines, map[string]bool{})...)
+			run = nil
+		}
+	}
+
 	for i := 0; i < len(raw); {
 		t := raw[i]
 		// A directive is a `#` that begins its line.
@@ -316,19 +357,75 @@ func preprocess(raw []token) []token {
 				dir = append(dir, raw[j])
 				j++
 			}
-			handleDirective(dir, defines, t.line)
 			i = j
+			if len(dir) == 0 {
+				if emitting() {
+					fatal(fmt.Sprintf("line %d: empty preprocessor directive", t.line))
+				}
+				continue
+			}
+			switch dir[0].s {
+			case "ifdef", "ifndef":
+				flush()
+				parent := emitting()
+				if parent && (len(dir) < 2 || dir[1].kind != tIdent) {
+					fatal(fmt.Sprintf("line %d: #%s needs a name", t.line, dir[0].s))
+				}
+				name := ""
+				if len(dir) >= 2 {
+					name = dir[1].s
+				}
+				_, def := defines[name]
+				want := dir[0].s == "ifdef"
+				conds = append(conds, condFrame{active: parent && def == want, taken: parent && def == want, parent: parent})
+			case "else":
+				flush()
+				if len(conds) == 0 {
+					fatal(fmt.Sprintf("line %d: #else without #ifdef", t.line))
+				}
+				top := &conds[len(conds)-1]
+				top.active = top.parent && !top.taken
+				top.taken = top.taken || top.active
+			case "endif":
+				flush()
+				if len(conds) == 0 {
+					fatal(fmt.Sprintf("line %d: #endif without #ifdef", t.line))
+				}
+				conds = conds[:len(conds)-1]
+			case "define":
+				if !emitting() {
+					continue
+				}
+				flush()
+				parseDefine(dir, defines, t.line)
+			case "undef":
+				if !emitting() {
+					continue
+				}
+				flush()
+				if len(dir) < 2 || dir[1].kind != tIdent {
+					fatal(fmt.Sprintf("line %d: #undef needs a name", t.line))
+				}
+				delete(defines, dir[1].s)
+			case "include":
+				if emitting() {
+					fatal(fmt.Sprintf("line %d: #include must be on its own line", t.line))
+				}
+			default:
+				if emitting() {
+					fatal(fmt.Sprintf("line %d: unknown directive #%s", t.line, dir[0].s))
+				}
+			}
 			continue
 		}
-		if t.kind == tIdent {
-			for _, e := range expandIdent(t.s, defines, map[string]bool{}) {
-				e.line = t.line
-				out = append(out, e)
-			}
-		} else {
-			out = append(out, t)
+		if emitting() {
+			run = append(run, t)
 		}
 		i++
+	}
+	flush()
+	if len(conds) > 0 {
+		fatal("unterminated #ifdef/#ifndef (missing #endif)")
 	}
 	endLine := 1
 	if len(raw) > 0 {
@@ -337,42 +434,154 @@ func preprocess(raw []token) []token {
 	return append(out, token{kind: tEOF, line: endLine})
 }
 
-func handleDirective(dir []token, defines map[string][]token, line int) {
-	if len(dir) == 0 {
-		fatal(fmt.Sprintf("line %d: empty preprocessor directive", line))
+// parseDefine records a #define. A macro is function-like only if `(` follows
+// the name immediately and the parenthesised text is a (possibly empty) list of
+// identifiers; otherwise it is object-like (so `#define W (8+8)` stays a value).
+func parseDefine(dir []token, defines map[string]macro, line int) {
+	if len(dir) < 2 || dir[1].kind != tIdent {
+		fatal(fmt.Sprintf("line %d: #define needs a name", line))
 	}
-	switch dir[0].s {
-	case "define":
-		if len(dir) < 2 || dir[1].kind != tIdent {
-			fatal(fmt.Sprintf("line %d: #define needs a name", line))
+	name := dir[1].s
+	if len(dir) >= 3 && dir[2].kind == tPunct && dir[2].s == "(" {
+		if params, bodyStart, ok := parseParamList(dir, 3); ok {
+			defines[name] = macro{isFunc: true, params: params, body: dir[bodyStart:]}
+			return
 		}
-		defines[dir[1].s] = dir[2:] // remaining tokens are the replacement
-	case "include":
-		fatal(fmt.Sprintf("line %d: #include must be on its own line", line))
-	default:
-		fatal(fmt.Sprintf("line %d: unknown directive #%s", line, dir[0].s))
+	}
+	defines[name] = macro{body: dir[2:]}
+}
+
+// parseParamList reads a comma-separated identifier list ending in `)`, starting
+// at dir[i] (just past the `(`). ok is false if the text is not a valid list, in
+// which case the caller falls back to an object-like macro.
+func parseParamList(dir []token, i int) (params []string, next int, ok bool) {
+	if i < len(dir) && dir[i].kind == tPunct && dir[i].s == ")" {
+		return nil, i + 1, true // zero parameters: F()
+	}
+	for {
+		if i >= len(dir) || dir[i].kind != tIdent {
+			return nil, 0, false
+		}
+		params = append(params, dir[i].s)
+		i++
+		if i >= len(dir) {
+			return nil, 0, false
+		}
+		switch {
+		case dir[i].kind == tPunct && dir[i].s == ")":
+			return params, i + 1, true
+		case dir[i].kind == tPunct && dir[i].s == ",":
+			i++
+		default:
+			return nil, 0, false
+		}
 	}
 }
 
-// expandIdent replaces a macro name with its (recursively expanded) tokens.
-// active guards against infinite expansion of self- or mutually-referential
-// macros.
-func expandIdent(name string, defines map[string][]token, active map[string]bool) []token {
-	rep, ok := defines[name]
-	if !ok || active[name] {
-		return []token{{kind: tIdent, s: name}}
-	}
-	active[name] = true
+// expandTokens replaces macro uses in toks with their (recursively expanded)
+// bodies. active guards against infinite expansion of self- or mutually-
+// referential macros. Replacement tokens are stamped with the use-site line.
+func expandTokens(toks []token, defines map[string]macro, active map[string]bool) []token {
 	var out []token
-	for _, t := range rep {
-		if t.kind == tIdent {
-			out = append(out, expandIdent(t.s, defines, active)...)
-		} else {
-			out = append(out, t)
+	appendExpanded := func(exp []token, line int) {
+		for _, e := range exp {
+			e.line = line
+			out = append(out, e)
 		}
 	}
-	delete(active, name)
+	for i := 0; i < len(toks); {
+		t := toks[i]
+		if t.kind == tIdent {
+			if m, ok := defines[t.s]; ok && !active[t.s] {
+				if m.isFunc {
+					if i+1 < len(toks) && toks[i+1].kind == tPunct && toks[i+1].s == "(" {
+						if args, next, ok := collectArgs(toks, i+1); ok {
+							if len(args) != len(m.params) {
+								fatal(fmt.Sprintf("line %d: macro %s expects %d argument(s), got %d",
+									t.line, t.s, len(m.params), len(args)))
+							}
+							// Arguments are fully expanded in the current context
+							// before being substituted into the body.
+							for k := range args {
+								args[k] = expandTokens(args[k], defines, active)
+							}
+							active[t.s] = true
+							exp := expandTokens(substitute(m, args), defines, active)
+							delete(active, t.s)
+							appendExpanded(exp, t.line)
+							i = next
+							continue
+						}
+					}
+					// A function-like macro name not followed by `(` is left alone.
+					out = append(out, t)
+					i++
+					continue
+				}
+				active[t.s] = true
+				exp := expandTokens(m.body, defines, active)
+				delete(active, t.s)
+				appendExpanded(exp, t.line)
+				i++
+				continue
+			}
+		}
+		out = append(out, t)
+		i++
+	}
 	return out
+}
+
+// substitute replaces each parameter name in the macro body with the tokens of
+// the corresponding argument.
+func substitute(m macro, args [][]token) []token {
+	idx := map[string]int{}
+	for k, p := range m.params {
+		idx[p] = k
+	}
+	var out []token
+	for _, t := range m.body {
+		if t.kind == tIdent {
+			if k, ok := idx[t.s]; ok {
+				out = append(out, args[k]...)
+				continue
+			}
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// collectArgs reads a call argument list. toks[lp] is the `(`; it returns the
+// top-level, comma-separated argument token groups (respecting nested parens)
+// and the index just past the matching `)`. ok is false if the parens are
+// unbalanced.
+func collectArgs(toks []token, lp int) (args [][]token, next int, ok bool) {
+	depth := 0
+	var cur []token
+	for i := lp; i < len(toks); i++ {
+		t := toks[i]
+		if t.kind == tPunct && t.s == "(" {
+			depth++
+			if depth == 1 {
+				continue // skip the outer '('
+			}
+		} else if t.kind == tPunct && t.s == ")" {
+			depth--
+			if depth == 0 {
+				if len(cur) > 0 || len(args) > 0 {
+					args = append(args, cur)
+				}
+				return args, i + 1, true
+			}
+		} else if t.kind == tPunct && t.s == "," && depth == 1 {
+			args = append(args, cur)
+			cur = nil
+			continue
+		}
+		cur = append(cur, t)
+	}
+	return nil, lp, false
 }
 
 func isHexish(c byte) bool {
@@ -405,11 +614,12 @@ type program struct {
 // ctype is a source-level type. Values are computed as 16-bit; a pointer is a
 // 16-bit linear address (segment:offset packed as high:low), so its size is 2.
 type ctype struct {
-	kind   string  // "char", "int", "void", "ptr", "array", "struct"
-	elem   *ctype  // for ptr/array
-	n      int     // element count for array
-	tag    string  // struct tag name
-	fields []field // struct members (with computed offsets)
+	kind     string  // "char", "int", "void", "ptr", "array", "struct"
+	elem     *ctype  // for ptr/array
+	n        int     // element count for array
+	tag      string  // struct tag name
+	fields   []field // struct members (with computed offsets)
+	unsigned bool    // int/char declared `unsigned`
 }
 
 type field struct {
@@ -438,8 +648,9 @@ func baseType(name string) *ctype {
 	}
 }
 
-func (t *ctype) isPtr() bool   { return t.kind == "ptr" }
-func (t *ctype) isArray() bool { return t.kind == "array" }
+func (t *ctype) isPtr() bool      { return t.kind == "ptr" }
+func (t *ctype) isArray() bool    { return t.kind == "array" }
+func (t *ctype) isUnsigned() bool { return t.unsigned }
 
 // sizeOf is the storage size in bytes.
 func sizeOf(t *ctype) int {
@@ -512,9 +723,11 @@ type node struct {
 // ---------------------------------------------------------------------------
 
 type parser struct {
-	toks    []token
-	pos     int
-	structs map[string]*ctype // struct tag -> type
+	toks       []token
+	pos        int
+	structs    map[string]*ctype // struct tag -> type
+	typedefs   map[string]*ctype // typedef name -> aliased type
+	enumConsts map[string]int    // enum constant name -> value
 }
 
 // structType returns the (possibly forward-declared) type for a struct tag.
@@ -530,8 +743,29 @@ func (p *parser) structType(tag string) *ctype {
 	return t
 }
 
-// parseBaseType parses a base type: `struct Tag` or int/char/void.
+// parseBaseType parses a base type: an optional `unsigned`/`signed`, then
+// `struct Tag`, `enum [Tag] [{ … }]`, a typedef name, or int/char/void.
 func (p *parser) parseBaseType() *ctype {
+	unsigned := false
+	if p.at("unsigned") {
+		p.next()
+		unsigned = true
+	} else if p.at("signed") {
+		p.next()
+	}
+	// `unsigned`/`signed` may stand alone (== int) or qualify int/char.
+	mkUnsigned := func(t *ctype) *ctype {
+		if !unsigned {
+			return t
+		}
+		return &ctype{kind: t.kind, unsigned: true}
+	}
+	if p.at("int") || p.at("char") || p.at("void") {
+		return mkUnsigned(baseType(p.next().s))
+	}
+	if unsigned {
+		return mkUnsigned(tInt) // bare `unsigned`
+	}
 	if p.at("struct") {
 		p.next()
 		tag := p.next()
@@ -540,7 +774,49 @@ func (p *parser) parseBaseType() *ctype {
 		}
 		return p.structType(tag.s)
 	}
-	return baseType(p.next().s)
+	if p.at("enum") {
+		return p.parseEnum()
+	}
+	name := p.next()
+	if td := p.typedefs[name.s]; td != nil {
+		return td
+	}
+	return baseType(name.s)
+}
+
+// parseEnum parses `enum [Tag] [{ A, B = 5, C }]`, registering each enumerator
+// as an integer constant. An enum is represented as a plain int.
+func (p *parser) parseEnum() *ctype {
+	p.expect("enum")
+	if p.peek().kind == tIdent && !p.at("{") { // optional tag, ignored
+		p.next()
+	}
+	if p.accept("{") {
+		if p.enumConsts == nil {
+			p.enumConsts = map[string]int{}
+		}
+		next := 0
+		for !p.at("}") {
+			name := p.next()
+			if name.kind != tIdent {
+				p.err("expected enum constant name")
+			}
+			if p.accept("=") {
+				v, ok := constEval(p.parseBinary(1))
+				if !ok {
+					p.err("enum initializer must be a constant expression")
+				}
+				next = v
+			}
+			p.enumConsts[name.s] = next
+			next++
+			if !p.accept(",") {
+				break
+			}
+		}
+		p.expect("}")
+	}
+	return tInt
 }
 
 func (p *parser) peek() token { return p.toks[p.pos] }
@@ -566,29 +842,54 @@ func (p *parser) err(msg string) {
 	fatal(fmt.Sprintf("line %d: %s", p.peek().line, msg))
 }
 
-func isTypeName(s string) bool {
-	return s == "int" || s == "char" || s == "void" || s == "struct"
+func isBuiltinTypeName(s string) bool {
+	switch s {
+	case "int", "char", "void", "struct", "enum", "unsigned", "signed":
+		return true
+	}
+	return false
+}
+
+// isTypeName reports whether s begins a type: a builtin keyword or a typedef
+// name registered earlier in the same translation unit.
+func (p *parser) isTypeName(s string) bool {
+	if isBuiltinTypeName(s) {
+		return true
+	}
+	_, ok := p.typedefs[s]
+	return ok
 }
 
 func (p *parser) parseProgram() *program {
 	prog := &program{}
 	for p.peek().kind != tEOF {
+		// A `typedef <type> Name;` declaration.
+		if p.at("typedef") {
+			p.parseTypedef()
+			continue
+		}
 		// A `struct Tag { ... };` definition at top level.
 		if p.at("struct") && p.toks[p.pos+2].kind == tPunct && p.toks[p.pos+2].s == "{" {
 			p.parseStructDef()
 			continue
 		}
 		// type name
-		if p.peek().kind != tIdent || !isTypeName(p.peek().s) {
-			p.err("expected a type (int/char/void/struct) at top level")
+		if p.peek().kind != tIdent || !p.isTypeName(p.peek().s) {
+			p.err("expected a type (int/char/void/struct/enum) at top level")
 		}
 		t := p.parseStars(p.parseBaseType())
+		// A bare type definition with no declarator, e.g. `enum Color { … };`.
+		if p.accept(";") {
+			continue
+		}
 		nameTok := p.next()
 		if nameTok.kind != tIdent {
 			p.err("expected identifier after type")
 		}
 		if p.at("(") {
-			prog.funcs = append(prog.funcs, p.parseFunc(nameTok.s, t))
+			if fd := p.parseFunc(nameTok.s, t); fd != nil {
+				prog.funcs = append(prog.funcs, fd)
+			}
 		} else {
 			// global variable (possibly an array)
 			t = p.parseArraySuffix(t)
@@ -602,6 +903,23 @@ func (p *parser) parseProgram() *program {
 		}
 	}
 	return prog
+}
+
+// parseTypedef parses `typedef <type> Name;` and registers the alias so later
+// declarations can use Name as a type.
+func (p *parser) parseTypedef() {
+	p.expect("typedef")
+	t := p.parseStars(p.parseBaseType())
+	name := p.next()
+	if name.kind != tIdent {
+		p.err("expected a name in typedef")
+	}
+	t = p.parseArraySuffix(t)
+	p.expect(";")
+	if p.typedefs == nil {
+		p.typedefs = map[string]*ctype{}
+	}
+	p.typedefs[name.s] = t
 }
 
 // parseStructDef parses `struct Tag { type name; ... };` and records the type,
@@ -700,7 +1018,7 @@ func (p *parser) parseFunc(name string, ret *ctype) *funcDecl {
 	fn := &funcDecl{name: name, ret: ret}
 	p.expect("(")
 	for !p.at(")") {
-		if !(p.peek().kind == tIdent && isTypeName(p.peek().s)) {
+		if !(p.peek().kind == tIdent && p.isTypeName(p.peek().s)) {
 			break
 		}
 		pt := p.parseStars(p.parseBaseType())
@@ -721,6 +1039,9 @@ func (p *parser) parseFunc(name string, ret *ctype) *funcDecl {
 		}
 	}
 	p.expect(")")
+	if p.accept(";") {
+		return nil // a forward declaration / prototype: no body to compile
+	}
 	fn.body = p.parseBlock()
 	return fn
 }
@@ -738,7 +1059,7 @@ func (p *parser) parseBlock() []*node {
 func (p *parser) parseStmt() *node {
 	line := p.peek().line
 	switch {
-	case p.peek().kind == tIdent && isTypeName(p.peek().s):
+	case p.peek().kind == tIdent && p.isTypeName(p.peek().s):
 		t := p.parseStars(p.parseBaseType())
 		nameTok := p.next()
 		if nameTok.kind != tIdent {
@@ -775,7 +1096,7 @@ func (p *parser) parseStmt() *node {
 		p.expect("(")
 		nd := &node{kind: "for", line: line}
 		if !p.at(";") { // init clause: a declaration or an expression
-			if p.peek().kind == tIdent && isTypeName(p.peek().s) {
+			if p.peek().kind == tIdent && p.isTypeName(p.peek().s) {
 				t := p.parseStars(p.parseBaseType())
 				nt := p.next()
 				if nt.kind != tIdent {
@@ -802,6 +1123,44 @@ func (p *parser) parseStmt() *node {
 		p.expect(")")
 		nd.then = p.parseStmtOrBlock()
 		return nd
+	case p.at("do"):
+		p.next()
+		body := p.parseStmtOrBlock()
+		if !p.accept("while") {
+			p.err("expected 'while' after do-body")
+		}
+		p.expect("(")
+		cond := p.parseExpr()
+		p.expect(")")
+		p.expect(";")
+		return &node{kind: "dowhile", cond: cond, then: body, line: line}
+	case p.at("switch"):
+		p.next()
+		p.expect("(")
+		cond := p.parseExpr()
+		p.expect(")")
+		p.expect("{")
+		var body []*node
+		for !p.at("}") {
+			switch {
+			case p.at("case"):
+				p.next()
+				v, ok := constEval(p.parseBinary(1))
+				if !ok {
+					p.err("case label must be a constant expression")
+				}
+				p.expect(":")
+				body = append(body, &node{kind: "case", num: v, line: line})
+			case p.at("default"):
+				p.next()
+				p.expect(":")
+				body = append(body, &node{kind: "case", arrow: true, line: line}) // arrow marks the default label
+			default:
+				body = append(body, p.parseStmt())
+			}
+		}
+		p.expect("}")
+		return &node{kind: "switch", cond: cond, then: body, line: line}
 	case p.at("return"):
 		p.next()
 		nd := &node{kind: "return", line: line}
@@ -850,20 +1209,108 @@ var binPrec = map[string]int{
 
 func (p *parser) parseExpr() *node { return p.parseAssign() }
 
+// compoundOps maps a compound-assignment token to its underlying binary
+// operator; `a op= b` is desugared to `a = a op b`.
+var compoundOps = map[string]string{
+	"+=": "+", "-=": "-", "*=": "*", "/=": "/", "%=": "%",
+	"&=": "&", "|=": "|", "^=": "^", "<<=": "<<", ">>=": ">>",
+}
+
 func (p *parser) parseAssign() *node {
-	left := p.parseBinary(1)
-	if p.at("=") {
-		line := p.peek().line
+	left := p.parseTernary()
+	tok := p.peek()
+	if tok.kind == tPunct && (tok.s == "=" || compoundOps[tok.s] != "") {
+		line := tok.line
 		p.next()
-		right := p.parseAssign()
 		switch left.kind {
 		case "var", "deref", "index", "member":
 		default:
-			fatal(fmt.Sprintf("line %d: left side of = is not assignable", line))
+			fatal(fmt.Sprintf("line %d: left side of assignment is not assignable", line))
+		}
+		right := p.parseAssign()
+		if base := compoundOps[tok.s]; base != "" {
+			// a op= b  ==>  a = a op b (left is evaluated twice; avoid side
+			// effects such as p[i++] in the left of a compound assignment).
+			right = &node{kind: "binary", op: base, lhs: left, rhs: right, line: line}
 		}
 		return &node{kind: "assign", lhs: left, rhs: right, line: line}
 	}
 	return left
+}
+
+// constEval folds a constant integer expression (used for switch case labels).
+// It handles numeric/char literals and the arithmetic/bitwise/unary operators.
+func constEval(e *node) (int, bool) {
+	switch e.kind {
+	case "num":
+		return e.num, true
+	case "unary":
+		v, ok := constEval(e.lhs)
+		if !ok {
+			return 0, false
+		}
+		switch e.op {
+		case "-":
+			return -v, true
+		case "~":
+			return ^v, true
+		case "!":
+			if v == 0 {
+				return 1, true
+			}
+			return 0, true
+		}
+	case "binary":
+		a, ok1 := constEval(e.lhs)
+		b, ok2 := constEval(e.rhs)
+		if !ok1 || !ok2 {
+			return 0, false
+		}
+		switch e.op {
+		case "+":
+			return a + b, true
+		case "-":
+			return a - b, true
+		case "*":
+			return a * b, true
+		case "/":
+			if b == 0 {
+				return 0, true
+			}
+			return a / b, true
+		case "%":
+			if b == 0 {
+				return 0, true
+			}
+			return a % b, true
+		case "&":
+			return a & b, true
+		case "|":
+			return a | b, true
+		case "^":
+			return a ^ b, true
+		case "<<":
+			return a << uint(b), true
+		case ">>":
+			return a >> uint(b), true
+		}
+	}
+	return 0, false
+}
+
+// parseTernary handles the conditional operator `cond ? a : b`, which binds
+// looser than every binary operator but tighter than assignment.
+func (p *parser) parseTernary() *node {
+	cond := p.parseBinary(1)
+	if p.at("?") {
+		line := p.peek().line
+		p.next()
+		then := p.parseAssign()
+		p.expect(":")
+		els := p.parseTernary()
+		return &node{kind: "ternary", cond: cond, lhs: then, rhs: els, line: line}
+	}
+	return cond
 }
 
 func (p *parser) parseBinary(minPrec int) *node {
@@ -891,13 +1338,18 @@ func (p *parser) parseUnary() *node {
 	if t.kind == tIdent && t.s == "sizeof" {
 		p.next()
 		// sizeof(type) if a type name follows '('; otherwise sizeof <expr>.
-		if p.at("(") && p.toks[p.pos+1].kind == tIdent && isTypeName(p.toks[p.pos+1].s) {
+		if p.at("(") && p.toks[p.pos+1].kind == tIdent && p.isTypeName(p.toks[p.pos+1].s) {
 			p.next() // (
 			ty := p.parseArraySuffix(p.parseStars(p.parseBaseType()))
 			p.expect(")")
 			return &node{kind: "num", num: sizeOf(ty), line: t.line}
 		}
 		return &node{kind: "sizeof", lhs: p.parseUnary(), line: t.line}
+	}
+	if t.kind == tPunct && (t.s == "++" || t.s == "--") { // pre-increment/decrement
+		p.next()
+		operand := p.parseUnary()
+		return &node{kind: "preincdec", op: t.s, lhs: operand, line: t.line}
 	}
 	if t.kind == tPunct && (t.s == "-" || t.s == "~" || t.s == "!" || t.s == "+") {
 		p.next()
@@ -937,6 +1389,9 @@ func (p *parser) parsePostfix() *node {
 				p.err("expected field name after '.'/'->'")
 			}
 			e = &node{kind: "member", lhs: e, name: fn.s, arrow: arrow, line: line}
+		case p.at("++") || p.at("--"):
+			op := p.next().s
+			e = &node{kind: "postincdec", op: op, lhs: e, line: line}
 		default:
 			return e
 		}
@@ -965,6 +1420,9 @@ func (p *parser) parsePrimary() *node {
 			}
 			p.expect(")")
 			return &node{kind: "call", name: t.s, args: args, line: t.line}
+		}
+		if v, ok := p.enumConsts[t.s]; ok {
+			return &node{kind: "num", num: v, line: t.line}
 		}
 		return &node{kind: "var", name: t.s, line: t.line}
 	case t.kind == tPunct && t.s == "(":
@@ -1031,6 +1489,14 @@ type generator struct {
 	strLits  []strLit
 	breakLbl []string // innermost loop's break target (stack)
 	contLbl  []string // innermost loop's continue target (stack)
+
+	// Recursion support. Each function's params+locals occupy a contiguous byte
+	// range in the data segment; a call to a (potentially) recursive function
+	// saves that whole range on the hardware stack and restores it on return, so
+	// the statically-allocated slots can be reused by a nested activation.
+	frameStart map[string]int  // function -> first data-segment byte of its frame
+	frameSize  map[string]int  // function -> frame size in bytes
+	recursive  map[string]bool // function -> reachable from itself in the call graph
 }
 
 // strLit is a string literal to emit as data in the code image; its label's
@@ -1043,10 +1509,13 @@ type strLit struct {
 func gen(prog *program) string {
 	progRef = prog
 	g := &generator{
-		off:     map[string]int{},
-		typ:     map[string]*ctype{},
-		fnNames: map[string]bool{},
-		fnRet:   map[string]*ctype{},
+		off:        map[string]int{},
+		typ:        map[string]*ctype{},
+		fnNames:    map[string]bool{},
+		fnRet:      map[string]*ctype{},
+		frameStart: map[string]int{},
+		frameSize:  map[string]int{},
+		recursive:  map[string]bool{},
 	}
 	for _, f := range prog.funcs {
 		g.fnNames[f.name] = true
@@ -1061,13 +1530,17 @@ func gen(prog *program) string {
 		g.alloc(gv.name, gv.typ)
 	}
 	for _, f := range prog.funcs {
+		start := g.nextOff
 		for _, pr := range f.params {
 			g.alloc(g.qual(f.name, pr.name), pr.typ)
 		}
 		for _, st := range f.body {
 			g.allocLocals(f.name, st)
 		}
+		g.frameStart[f.name] = start
+		g.frameSize[f.name] = g.nextOff - start
 	}
+	g.computeRecursive(prog)
 
 	g.emit(".org 0x%x", codeOrg)
 	g.emit("")
@@ -1091,6 +1564,66 @@ func gen(prog *program) string {
 	g.genRuntime()
 	g.genStrings()
 	return g.b.String()
+}
+
+// computeRecursive marks every function that can reach itself in the call graph
+// (directly or through a cycle). A call to such a function must save/restore its
+// frame so a nested activation does not clobber the caller's locals.
+func (g *generator) computeRecursive(prog *program) {
+	callees := map[string]map[string]bool{}
+	for _, f := range prog.funcs {
+		set := map[string]bool{}
+		for _, st := range f.body {
+			g.collectCalls(st, set)
+		}
+		callees[f.name] = set
+	}
+	for _, f := range prog.funcs {
+		seen := map[string]bool{}
+		var stack []string
+		for c := range callees[f.name] {
+			stack = append(stack, c)
+		}
+		for len(stack) > 0 {
+			x := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if x == f.name {
+				g.recursive[f.name] = true
+				break
+			}
+			if seen[x] {
+				continue
+			}
+			seen[x] = true
+			for c := range callees[x] {
+				stack = append(stack, c)
+			}
+		}
+	}
+}
+
+// collectCalls records every user-function name called anywhere within n.
+func (g *generator) collectCalls(n *node, out map[string]bool) {
+	if n == nil {
+		return
+	}
+	if n.kind == "call" && g.fnNames[n.name] {
+		out[n.name] = true
+	}
+	g.collectCalls(n.init, out)
+	g.collectCalls(n.cond, out)
+	g.collectCalls(n.post, out)
+	g.collectCalls(n.lhs, out)
+	g.collectCalls(n.rhs, out)
+	for _, c := range n.then {
+		g.collectCalls(c, out)
+	}
+	for _, c := range n.els {
+		g.collectCalls(c, out)
+	}
+	for _, a := range n.args {
+		g.collectCalls(a, out)
+	}
 }
 
 // genVarInit stores an initializer into the variable at data offset off. Arrays
@@ -1453,7 +1986,7 @@ func (g *generator) allocLocals(fn string, st *node) {
 		for _, s := range st.els {
 			g.allocLocals(fn, s)
 		}
-	case "while", "block":
+	case "while", "block", "dowhile", "switch":
 		for _, s := range st.then {
 			g.allocLocals(fn, s)
 		}
@@ -1629,13 +2162,29 @@ func (g *generator) genStmt(st *node, endLabel string) {
 		g.emit("JMP %s", top)
 		g.emit("%s:", done)
 		g.popLoop()
+	case "dowhile":
+		top := g.label()
+		cont := g.label()
+		done := g.label()
+		g.pushLoop(done, cont) // continue re-tests the condition at the bottom
+		g.emit("%s:", top)
+		for _, s := range st.then {
+			g.genStmt(s, endLabel)
+		}
+		g.emit("%s:", cont)
+		g.genExpr(st.cond, "")
+		g.branchNonZero(top) // cond != 0 -> loop again
+		g.emit("%s:", done)
+		g.popLoop()
+	case "switch":
+		g.genSwitch(st, endLabel)
 	case "break":
 		if len(g.breakLbl) == 0 {
 			fatal(fmt.Sprintf("line %d: break outside a loop", st.line))
 		}
 		g.emit("JMP %s", g.breakLbl[len(g.breakLbl)-1])
 	case "continue":
-		if len(g.contLbl) == 0 {
+		if len(g.contLbl) == 0 || g.contLbl[len(g.contLbl)-1] == switchNoCont {
 			fatal(fmt.Sprintf("line %d: continue outside a loop", st.line))
 		}
 		g.emit("JMP %s", g.contLbl[len(g.contLbl)-1])
@@ -1652,6 +2201,75 @@ func (g *generator) pushLoop(breakL, contL string) {
 func (g *generator) popLoop() {
 	g.breakLbl = g.breakLbl[:len(g.breakLbl)-1]
 	g.contLbl = g.contLbl[:len(g.contLbl)-1]
+}
+
+// switchNoCont marks the continue slot pushed by a switch: a `continue` there
+// refers to the enclosing loop, so a bare switch leaves it unusable.
+const switchNoCont = "__no_cont"
+
+// pushSwitch installs a break target for a switch while leaving `continue`
+// bound to whatever loop (if any) encloses the switch.
+func (g *generator) pushSwitch(breakL string) {
+	g.breakLbl = append(g.breakLbl, breakL)
+	cont := switchNoCont
+	if len(g.contLbl) > 0 {
+		cont = g.contLbl[len(g.contLbl)-1]
+	}
+	g.contLbl = append(g.contLbl, cont)
+}
+
+func (g *generator) popSwitch() { g.popLoop() }
+
+// genSwitch evaluates the controlling expression once, dispatches to the first
+// matching case (or default), and emits the case bodies with fall-through. A
+// `break` exits to the end. The controlling value is stashed in rtN, which is
+// live only during this dispatch (bodies run afterwards), so nested switches
+// and the mul/div helpers used inside bodies do not collide with it.
+func (g *generator) genSwitch(st *node, endLabel string) {
+	done := g.label()
+	labels := make([]string, len(st.then))
+	defaultLbl := ""
+	for i, s := range st.then {
+		if s.kind == "case" {
+			labels[i] = g.label()
+			if s.arrow { // the default marker
+				defaultLbl = labels[i]
+			}
+		}
+	}
+	g.genExpr(st.cond, "")
+	g.emit("MOV [0x%x], ax", rtN)
+	g.emit("MOV [0x%x], dx", rtN+1)
+	for i, s := range st.then {
+		if s.kind != "case" || s.arrow {
+			continue
+		}
+		v := s.num & 0xffff
+		next := g.label()
+		g.emit("MOV ax, [0x%x]", rtN)
+		g.emit("CMP ax, 0x%x", v&0xff)
+		g.emit("JNZ %s", next)
+		g.emit("MOV ax, [0x%x]", rtN+1)
+		g.emit("CMP ax, 0x%x", (v>>8)&0xff)
+		g.emit("JNZ %s", next)
+		g.emit("JMP %s", labels[i]) // matched (label may be far)
+		g.emit("%s:", next)
+	}
+	if defaultLbl != "" {
+		g.emit("JMP %s", defaultLbl)
+	} else {
+		g.emit("JMP %s", done)
+	}
+	g.pushSwitch(done)
+	for i, s := range st.then {
+		if s.kind == "case" {
+			g.emit("%s:", labels[i])
+			continue
+		}
+		g.genStmt(s, endLabel)
+	}
+	g.emit("%s:", done)
+	g.popSwitch()
 }
 
 // memberInfo resolves a `.`/`->` access to (field offset, field type). For `->`
@@ -1706,6 +2324,10 @@ func (g *generator) typeOf(e *node) *ctype {
 		return decay(bt.elem)
 	case "assign":
 		return g.lvalueType(e.lhs)
+	case "preincdec", "postincdec":
+		return g.lvalueType(e.lhs)
+	case "ternary":
+		return g.typeOf(e.lhs) // assume both arms share a type
 	case "str":
 		return ptrTo(tChar)
 	case "sizeof":
@@ -1855,6 +2477,50 @@ func (g *generator) genStore(lhs, rhs *node) {
 	}
 }
 
+// genIncDec compiles ++/-- on a scalar lvalue. The address is computed once and
+// kept in rtA, so the increment reads and writes the same location (correct for
+// side-effecting subscripts). The result is the new value for a prefix form and
+// the old value for a postfix form. Pointers step by their pointee size.
+func (g *generator) genIncDec(e *node, post bool) {
+	lt := g.lvalueType(e.lhs)
+	if lt.isArray() || lt.kind == "struct" {
+		fatal(fmt.Sprintf("line %d: cannot ++/-- a whole array or struct", e.line))
+	}
+	width := scalarWidth(lt)
+	step := 1
+	if lt.isPtr() {
+		step = sizeOf(lt.elem)
+	}
+	g.genAddr(e.lhs)
+	g.emit("MOV [0x%x], ax", rtA) // stash the address for the load and store
+	g.emit("MOV [0x%x], dx", rtA+1)
+	g.loadThrough(width) // ax:dx = old value
+	if post {
+		g.emit("PUSH ax") // keep the old value as the expression result
+		g.emit("PUSH dx")
+	}
+	g.emit("MOV bx, 0x%x", step&0xff)
+	g.emit("MOV cx, 0x%x", (step>>8)&0xff)
+	if e.op == "++" {
+		g.usesAdd = true
+		g.emit("CALL __add16")
+	} else {
+		g.usesSub = true
+		g.emit("CALL __sub16")
+	}
+	if width == 1 {
+		g.usesSt8 = true
+		g.emit("CALL __store8")
+	} else {
+		g.usesSt16 = true
+		g.emit("CALL __store16")
+	}
+	if post {
+		g.emit("POP dx")
+		g.emit("POP ax") // result = old value
+	}
+}
+
 // sizeofOf returns sizeof(e) in bytes. A variable uses its declared (un-decayed)
 // type, so sizeof(array) is the whole array, not a pointer.
 func (g *generator) sizeofOf(e *node) int {
@@ -1940,6 +2606,20 @@ func (g *generator) genExpr(e *node, _ string) {
 		}
 	case "binary":
 		g.genBinary(e)
+	case "ternary":
+		els := g.label()
+		done := g.label()
+		g.genExpr(e.cond, "")
+		g.branchZero(els) // cond == 0 -> else value
+		g.genExpr(e.lhs, "")
+		g.emit("JMP %s", done)
+		g.emit("%s:", els)
+		g.genExpr(e.rhs, "")
+		g.emit("%s:", done)
+	case "preincdec":
+		g.genIncDec(e, false)
+	case "postincdec":
+		g.genIncDec(e, true)
 	case "call":
 		g.genCall(e)
 	default:
@@ -2019,8 +2699,10 @@ func (g *generator) genBinary(e *node) {
 		g.emit("MOV ax, bx") // remainder is in bx:cx
 		g.emit("MOV dx, cx")
 	case "==", "!=", "<", ">", "<=", ">=":
-		// Pointer comparisons are unsigned; integer relationals are signed.
-		signedRel := !(g.typeOf(e.lhs).isPtr() || g.typeOf(e.rhs).isPtr())
+		// Relationals are signed for plain int; pointers and `unsigned`
+		// operands compare unsigned.
+		lt, rt := g.typeOf(e.lhs), g.typeOf(e.rhs)
+		signedRel := !(lt.isPtr() || rt.isPtr() || lt.isUnsigned() || rt.isUnsigned())
 		g.genCompare(e.op, signedRel)
 	default:
 		fatal("unknown binary operator " + e.op)
@@ -2163,22 +2845,86 @@ func (g *generator) genCall(e *node) {
 		g.emit("MOV ds, 0x%x", dataSeg)
 		return
 	}
+	// Built-in: __out(port, value) writes the low byte of value to an I/O port.
+	if e.name == "__out" {
+		if len(e.args) != 2 {
+			fatal(fmt.Sprintf("line %d: __out expects (port, value)", e.line))
+		}
+		if e.args[0].kind == "num" { // constant port -> immediate form
+			g.genExpr(e.args[1], "") // value -> ax (low byte)
+			g.emit("OUT 0x%x, ax", e.args[0].num&0xff)
+		} else {
+			g.genExpr(e.args[1], "") // value
+			g.emit("PUSH ax")
+			g.genExpr(e.args[0], "") // port -> ax
+			g.emit("MOV bx, ax")
+			g.emit("POP ax") // value back in ax
+			g.emit("OUT bx, ax")
+		}
+		return
+	}
+	// Built-in: __in(port) reads a byte from an I/O port (zero-extended to 16-bit).
+	if e.name == "__in" {
+		if len(e.args) != 1 {
+			fatal(fmt.Sprintf("line %d: __in expects (port)", e.line))
+		}
+		if e.args[0].kind == "num" { // constant port -> immediate form
+			g.emit("IN ax, 0x%x", e.args[0].num&0xff)
+		} else {
+			g.genExpr(e.args[0], "") // port -> ax
+			g.emit("MOV bx, ax")
+			g.emit("IN ax, bx")
+		}
+		g.emit("MOV dx, 0") // a port read yields one byte
+		return
+	}
 	if !g.fnNames[e.name] {
 		fatal(fmt.Sprintf("line %d: call to unknown function %q", e.line, e.name))
 	}
-	// Pass arguments by writing into the callee's static parameter slots.
-	// (Non-reentrant; see README.)
 	fnParams := g.paramKeys(e.name)
 	if len(e.args) != len(fnParams) {
 		fatal(fmt.Sprintf("line %d: %s expects %d argument(s), got %d",
 			e.line, e.name, len(fnParams), len(e.args)))
 	}
+	// A (potentially) recursive callee needs its frame preserved across the call.
+	if g.recursive[e.name] && g.frameSize[e.name] > 0 {
+		g.genReentrantCall(e, fnParams)
+		return
+	}
+	// Non-recursive: pass arguments straight into the callee's static slots.
 	for i, a := range e.args {
 		g.genExpr(a, "")
 		key := fnParams[i]
 		g.storeAt(g.off[key], scalarWidth(g.typ[key]))
 	}
 	g.emit("CALL %s", e.name)
+}
+
+// genReentrantCall calls a recursive function: it saves the callee's whole frame
+// on the stack, marshals the arguments through the stack (so an argument that
+// reads a parameter is not disturbed by an earlier argument's store), writes
+// them into the parameter slots, calls, then restores the saved frame.
+func (g *generator) genReentrantCall(e *node, fnParams []string) {
+	start := g.frameStart[e.name]
+	size := g.frameSize[e.name]
+	for off := start; off < start+size; off++ {
+		g.emit("PUSH [0x%x]", off) // save the caller's copy of this frame byte
+	}
+	for _, a := range e.args {
+		g.genExpr(a, "")
+		g.emit("PUSH ax")
+		g.emit("PUSH dx")
+	}
+	for i := len(fnParams) - 1; i >= 0; i-- {
+		g.emit("POP dx")
+		g.emit("POP ax")
+		key := fnParams[i]
+		g.storeAt(g.off[key], scalarWidth(g.typ[key]))
+	}
+	g.emit("CALL %s", e.name)
+	for off := start + size - 1; off >= start; off-- {
+		g.emit("POP [0x%x]", off) // restore the caller's frame byte
+	}
 }
 
 func (g *generator) paramKeys(fn string) []string {
