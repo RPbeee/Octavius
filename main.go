@@ -213,12 +213,19 @@ func main() {
 		screen.Show()
 		now = time.Now()
 
-		tick()
+		if !halting {
+			tick()
+		}
 		floppyTick()
 		keyTick()
 		interrupt()
 
-		advancePC()
+		// halting中は命令フェッチもPC更新もしない。interrupt()が割り込みを
+		// ディスパッチした場合は halting が解除されているので、advancePC()で
+		// ハンドラ先頭に着地する(setNext同様、末尾のadvancePCで補正)。
+		if !halting {
+			advancePC()
+		}
 		time.Sleep(time.Second / time.Duration(emuFreq))
 	}
 }
@@ -1081,7 +1088,9 @@ func decode(inst []uint8) {
 	case 0xff:
 		//HLT
 		if statsReg>>2&1 == 0 {
-			//
+			// 命令の実行だけを止める。割り込みが来るまでフェッチを停止し、
+			// interrupt()がディスパッチしたら halting を解除して復帰する。
+			halting = true
 		} else {
 			// NOT PRIVILEGED
 			// 0x7f

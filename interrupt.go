@@ -10,6 +10,7 @@ var irq [2]uint64
 func interrupt() { // こいつのメモリアクセスは割込みベクタだから物理アドレス参照。
 	if (irq[0] != 0 || irq[1] != 0) && statsReg&1 == 1 {
 		//Interrupt
+		halting = false // HLTで停止中でも割り込みを受けたら実行を再開する
 		push([]uint8{0x00, 0x00, 0x00, 0x00}) //PUSH ip
 		push([]uint8{0x00, 0x07, 0x00, 0x00}) //PUSH cs
 		push([]uint8{0x00, 0x0b, 0x00, 0x00}) //PUSH flags
