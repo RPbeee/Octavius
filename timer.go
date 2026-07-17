@@ -26,3 +26,16 @@ func timerTick() {
 		irq[0] |= 0x02 // hardware IRQ 1
 	}
 }
+
+// outPort writes an I/O port and runs the device side effects: the floppy
+// DATA cursor advances, and writing either timer period byte restarts the
+// count (standard PIT behavior — lets the OS re-arm a full time slice).
+func outPort(port, val uint8) {
+	ioport[port] = val
+	switch port {
+	case floppy_DATA:
+		updateFloppyIO()
+	case timer_LO, timer_HI:
+		timerCount = 0
+	}
+}

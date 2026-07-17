@@ -113,6 +113,12 @@ void main() {
 - **Built-ins**:
   - `putc(pos, ch)` writes byte `ch` to video text RAM cell `pos`
     (segment `0xfb`). This is how you produce visible output.
+  - `__syscall(n, arg)` executes the `SYSCALL` instruction with call number
+    `n` in `cx` and the 16-bit `arg` in `ax:dx`; the expression evaluates to
+    the kernel's return value (returned in `ax:dx`). Clobbers `cx`.
+  - A **function name used as a value** (not called) evaluates to its 16-bit
+    linear address — for spawn-style APIs, e.g. `__syscall(SYS_SPAWN, task_e)`.
+    There are no callable function pointers.
   - `__out(port, value)` writes the low byte of `value` to I/O `port`, and
     `__in(port)` reads a byte from `port` (zero-extended to 16-bit). A constant
     `port` uses the immediate instruction form. These are the raw `OUT`/`IN`

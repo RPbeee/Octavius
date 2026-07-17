@@ -2575,6 +2575,15 @@ func (g *generator) genExpr(e *node, _ string) {
 		g.emit("MOV ax, 0x%x", sz&0xff)
 		g.emit("MOV dx, 0x%x", (sz>>8)&0xff)
 	case "var":
+		// A function name used as a value yields its 16-bit linear address
+		// (for spawn-style APIs; there are no callable function pointers).
+		if _, isVar := g.off[g.qual(g.curFn, e.name)]; !isVar {
+			if _, isGlobal := g.off[e.name]; !isGlobal && g.fnNames[e.name] {
+				g.emit("MOV ax, low(%s)", e.name)
+				g.emit("MOV dx, high(%s)", e.name)
+				return
+			}
+		}
 		if _, t := g.resolve(e.name); t.isArray() {
 			g.genAddr(e) // an array decays to the address of its first element
 		} else {
@@ -2875,6 +2884,25 @@ func (g *generator) genCall(e *node) {
 			g.emit("POP ax") // value back in ax
 			g.emit("OUT bx, ax")
 		}
+		return
+	}
+	// Built-in: __syscall(n, arg) raises software interrupt 0x70 with the call
+	// number in cx and a 16-bit argument in ax:dx. The kernel's return value
+	// comes back in ax:dx (the expression's value). Clobbers cx.
+	if e.name == "__syscall" {
+		if len(e.args) != 2 {
+			fatal(fmt.Sprintf("line %d: __syscall expects (n, arg)", e.line))
+		}
+		if e.args[0].kind == "num" { // constant call number
+			g.genExpr(e.args[1], "") // arg -> ax:dx
+			g.emit("MOV cx, 0x%x", e.args[0].num&0xff)
+		} else {
+			g.genExpr(e.args[0], "") // n
+			g.emit("PUSH ax")
+			g.genExpr(e.args[1], "") // arg -> ax:dx
+			g.emit("POP cx")
+		}
+		g.emit("SYSCALL")
 		return
 	}
 	// Built-in: __in(port) reads a byte from an I/O port (zero-extended to 16-bit).

@@ -9,6 +9,7 @@ func isExecutable(page uint8) bool {
 		} else {
 			//not valid
 			// 0x7d 未マップページ
+			ioport[faultPage_PORT] = page
 			irq[1] |= 0x2000000000000000
 			//
 		}
@@ -35,6 +36,7 @@ func readMemory(address uint16, length uint8) []uint8 {
 					//not privileged
 					//INTERRUPT
 					// 0x7e
+					ioport[faultPage_PORT] = uint8(address >> 8)
 					irq[1] |= 0x4000000000000000
 					//割り込みと通常処理が順番な都合
 					reg[ip] -= InstLength
@@ -43,6 +45,7 @@ func readMemory(address uint16, length uint8) []uint8 {
 				//not Readable
 				//INTERRUPT
 				// 0x7e
+				ioport[faultPage_PORT] = uint8(address >> 8)
 				irq[1] |= 0x4000000000000000
 				//割り込みと通常処理が順番な都合
 				reg[ip] -= InstLength
@@ -51,6 +54,7 @@ func readMemory(address uint16, length uint8) []uint8 {
 			// Invalid
 			// INTERRUPT
 			// 0x7d
+			ioport[faultPage_PORT] = uint8(address >> 8)
 			irq[1] |= 0x2000000000000000
 			//割り込みと通常処理が順番な都合
 			reg[ip] -= InstLength
@@ -59,7 +63,9 @@ func readMemory(address uint16, length uint8) []uint8 {
 		// MMU OFF
 		return mem[uint(address>>8)*0x100+uint(address&0xff) : uint(address>>8)*0x100+uint(address&0xff)+uint(length)]
 	}
-	return []uint8{}
+	// フォルト時はゼロ埋めを返す。ip は巻き戻し済みなので命令はハンドラ後に
+	// 再実行される (空スライスを返すと decode 側の [0] 参照で Go が panic する)。
+	return make([]uint8, length)
 }
 
 func writeMemory(address uint16, data []uint8) {
@@ -82,6 +88,7 @@ func writeMemory(address uint16, data []uint8) {
 					//not privileged
 					//INTERRUPT
 					// 0x7e
+					ioport[faultPage_PORT] = uint8(address >> 8)
 					irq[1] |= 0x4000000000000000
 					//割り込みと通常処理が順番な都合
 					reg[ip] -= InstLength
@@ -90,6 +97,7 @@ func writeMemory(address uint16, data []uint8) {
 				//not Writable
 				//INTERRUPT
 				// 0x7e
+				ioport[faultPage_PORT] = uint8(address >> 8)
 				irq[1] |= 0x4000000000000000
 				//割り込みと通常処理が順番な都合
 				reg[ip] -= InstLength
@@ -98,6 +106,7 @@ func writeMemory(address uint16, data []uint8) {
 			// Invalid
 			// INTERRUPT
 			// 0x7d
+			ioport[faultPage_PORT] = uint8(address >> 8)
 			irq[1] |= 0x2000000000000000
 			//割り込みと通常処理が順番な都合
 			reg[ip] -= InstLength
@@ -107,3 +116,7 @@ func writeMemory(address uint16, data []uint8) {
 		copy(mem[uint(address>>8)*0x100+uint(address&0xff):uint(address>>8)*0x100+uint(address&0xff)+uint(len(data))], data)
 	}
 }
+
+// faultPage_PORT: reading I/O port 0x16 yields the virtual page number of
+// the most recent MMU fault (0x7d/0x7e) — the OS page-fault handler's "CR2".
+const faultPage_PORT = 0x16

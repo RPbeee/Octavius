@@ -976,17 +976,11 @@ func decode(inst []uint8) {
 		if statsReg>>2&1 == 0 {
 			if inst[1] < 0x0c {
 				if inst[2] < 0x0c {
-					ioport[reg[inst[1]]] = reg[inst[2]]
-					if reg[inst[1]] == floppy_DATA {
-						updateFloppyIO()
-					}
+					outPort(reg[inst[1]], reg[inst[2]])
 				}
 			} else {
 				if inst[2] < 0x0c {
-					ioport[inst[1]] = reg[inst[2]]
-					if inst[1] == floppy_DATA {
-						updateFloppyIO()
-					}
+					outPort(inst[1], reg[inst[2]])
 				}
 			}
 		} else {
@@ -1088,6 +1082,14 @@ func decode(inst []uint8) {
 		// IRETが実行されないままスタックが伸びる競合があるため、
 		// x86のIF復元と同様にIRET自身が再有効化する。
 		statsReg |= 1
+		// ディスパッチ時に flags bit4 へ退避したプロセッサモードを復元する。
+		// 新規タスクの初期スタックに flags=0x10 を積めば USER モードで開始できる。
+		if reg[flag]&0x10 != 0 {
+			statsReg |= 0x04
+		} else {
+			statsReg &= ^uint8(0x04)
+		}
+		reg[flag] &= 0x0f
 	case 0x23:
 		//LST
 		if statsReg>>2&1 == 0 {
