@@ -49,6 +49,7 @@ oasm link -o floppy.img hello.bin@0
 | Directive        | Meaning                                             |
 | ---------------- | --------------------------------------------------- |
 | `.org N`         | set assembly origin (affects label values)          |
+| `.align N`       | zero-pad up to the next multiple of N (e.g. `.align 4` keeps code after `db` data 4-byte aligned) |
 | `db a, b, "str"` | emit raw bytes; strings are inlined byte-for-byte   |
 | `NAME = VALUE`   | define a constant                                   |
 
@@ -92,6 +93,7 @@ JMP  target                     ; see jump forms
 JZ JNZ JA JBE JG JLE JC JNC  target   ; conditional, relative
 IRET      SYSCALL      HLT
 LST 0|1, [bx]            ; 0=page table, 1=IDT
+STS  src                 ; statsReg = reg/imm (privileged); STS 1 enables interrupts
 ```
 
 ### Jump / call targets

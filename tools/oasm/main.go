@@ -171,6 +171,17 @@ func assemble(src string, org int) ([]byte, int, error) {
 			addr = n
 			org = n
 			continue
+		case ".align":
+			// pad with zeros up to the next multiple of N
+			if len(fields) != 2 {
+				return nil, 0, fmt.Errorf("line %d: .align needs one value", i+1)
+			}
+			n, ok := parseNum(fields[1])
+			if !ok || n <= 0 {
+				return nil, 0, fmt.Errorf("line %d: bad .align value", i+1)
+			}
+			addr = (addr + n - 1) / n * n
+			continue
 		case "equ", ".equ":
 			// NAME equ VALUE  (also allow ".equ NAME VALUE")
 			return nil, 0, fmt.Errorf("line %d: use 'NAME = VALUE' for constants", i+1)

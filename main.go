@@ -97,136 +97,155 @@ func main() {
 			}
 		}
 	}()
+	// 描画はCPU実行から切り離して約30fpsで行う。以前は1命令ごとに全画面を
+	// 再描画していて、そのコストで実効クロックが -freq よりはるかに低くなって
+	// いた。命令実行も約1msぶんまとめて進めてから1回だけsleepする(µs単位の
+	// sleepを毎命令呼ぶオーバーヘッド対策)。Freq表示は実測値。
+	drawInterval := time.Second / 30
+	var lastDraw time.Time
+	instrSince := 0
+	batch := int(emuFreq) / 1000
+	if batch < 1 {
+		batch = 1
+	}
 	for {
-		screen.Clear()
-		if ((float64(time.Now().UnixMicro()) - float64(now.UnixMicro())) / 1000000.0) != 0 {
-			freq = 1 / ((float64(time.Now().UnixMicro()) - float64(now.UnixMicro())) / 1000000.0)
-		}
+		if time.Since(lastDraw) >= drawInterval {
+			if el := time.Since(now).Seconds(); el > 0 {
+				freq = float64(instrSince) / el
+			}
+			instrSince = 0
+			now = time.Now()
+			lastDraw = now
+			screen.Clear()
 
-		width, _ := screen.Size()
+			width, _ := screen.Size()
 
-		// Layout decision (Side-by-side if terminal is wide enough, stacked otherwise)
-		var dispX, dispY, dbgX, dbgY int
-		var useLayout bool // true: Side-by-side, false: Stacked
-		if width >= 105 {
-			useLayout = true
-			dbgX = 1
-			dbgY = 1
-			dispX = 37
-			dispY = 1
-		} else {
-			useLayout = false
-			dispX = 1
-			dispY = 1
-			dbgX = 1
-			dbgY = 19
-		}
+			// Layout decision (Side-by-side if terminal is wide enough, stacked otherwise)
+			var dispX, dispY, dbgX, dbgY int
+			var useLayout bool // true: Side-by-side, false: Stacked
+			if width >= 105 {
+				useLayout = true
+				dbgX = 1
+				dbgY = 1
+				dispX = 37
+				dispY = 1
+			} else {
+				useLayout = false
+				dispX = 1
+				dispY = 1
+				dbgX = 1
+				dbgY = 19
+			}
 
-		// 1. Draw Display (64x16 -> 66x18 with border)
-		drawBox(screen, dispX, dispY, displayWidth+2, displayHeight+2, "VRAM DISPLAY (64x16)", styleBorder, styleTitle)
-		for y := 0; y < displayHeight; y++ {
-			for x := 0; x < displayWidth; x++ {
-				addr := 0xfb00 + y*displayWidth + x
-				ch := ' '
-				if addr < len(mem) {
-					ch = rune(mem[addr])
-					if ch < 32 || ch > 126 {
-						ch = '.'
+			// 1. Draw Display (64x16 -> 66x18 with border)
+			drawBox(screen, dispX, dispY, displayWidth+2, displayHeight+2, "VRAM DISPLAY (64x16)", styleBorder, styleTitle)
+			for y := 0; y < displayHeight; y++ {
+				for x := 0; x < displayWidth; x++ {
+					addr := 0xfb00 + y*displayWidth + x
+					ch := ' '
+					if addr < len(mem) {
+						ch = rune(mem[addr])
+						if ch < 32 || ch > 126 {
+							ch = '.'
+						}
 					}
+					screen.SetContent(dispX+1+x, dispY+1+y, ch, nil, styleDisplay)
 				}
-				screen.SetContent(dispX+1+x, dispY+1+y, ch, nil, styleDisplay)
+			}
+
+			// 2. Draw Debug Panel
+			dbgW := 34
+			dbgH := 18
+			if !useLayout {
+				dbgW = 66
+				dbgH = 11
+			}
+
+			drawBox(screen, dbgX, dbgY, dbgW, dbgH, "CPU DEBUG STATUS", styleBorder, styleTitle)
+
+			if useLayout {
+				// Side-by-Side Layout
+				drawString(screen, dbgX+2, dbgY+2, "Time:", styleLabel)
+				drawString(screen, dbgX+8, dbgY+2, now.Format("15:04:05"), styleValue)
+				drawString(screen, dbgX+18, dbgY+2, "Freq:", styleLabel)
+				drawString(screen, dbgX+24, dbgY+2, fmt.Sprintf("%.2fHz", freq), styleValue)
+
+				drawString(screen, dbgX+2, dbgY+4, "Registers:", styleLabel)
+				drawString(screen, dbgX+3, dbgY+5, fmt.Sprintf("AX: %02X  BX: %02X  CX: %02X  DX: %02X", reg[ax], reg[bx], reg[cx], reg[dx]), styleValue)
+				drawString(screen, dbgX+3, dbgY+6, fmt.Sprintf("SP: %02X  BP: %02X  DI: %02X  FL: %02X", reg[sp], reg[bp], reg[di], reg[flag]), styleValue)
+				drawString(screen, dbgX+3, dbgY+7, fmt.Sprintf("CS: %02X  DS: %02X  SS: %02X  IP: %02X", reg[cs], reg[ds], reg[ss], reg[ip]), styleValue)
+
+				physAddr := uint(reg[cs])*0x100 + uint(reg[ip])
+				drawString(screen, dbgX+2, dbgY+9, "CS:IP (Phys):", styleLabel)
+				drawString(screen, dbgX+16, dbgY+9, fmt.Sprintf("%02X:%02X (%04X)", reg[cs], reg[ip], physAddr), styleValue)
+
+				drawString(screen, dbgX+2, dbgY+11, "Code Dump (CS:IP):", styleLabel)
+				baseAddr := uint(reg[cs])*0x100 + uint(reg[ip])
+				for i := 0; i < 4; i++ {
+					addr := baseAddr + uint(i*4)
+					b := make([]byte, 4)
+					for j := 0; j < 4; j++ {
+						a := addr + uint(j)
+						if a < uint(len(mem)) {
+							b[j] = mem[a]
+						}
+					}
+					dumpStr := fmt.Sprintf(" %04X: %02X %02X %02X %02X", addr&0xFFFF, b[0], b[1], b[2], b[3])
+					drawString(screen, dbgX+2, dbgY+12+i, dumpStr, styleNormal)
+				}
+			} else {
+				// Stacked Layout
+				physAddr := uint(reg[cs])*0x100 + uint(reg[ip])
+				drawString(screen, dbgX+2, dbgY+2, "Time:", styleLabel)
+				drawString(screen, dbgX+8, dbgY+2, now.Format("15:04:05"), styleValue)
+				drawString(screen, dbgX+18, dbgY+2, "Freq:", styleLabel)
+				drawString(screen, dbgX+24, dbgY+2, fmt.Sprintf("%.2fHz", freq), styleValue)
+				drawString(screen, dbgX+38, dbgY+2, "CS:IP:", styleLabel)
+				drawString(screen, dbgX+45, dbgY+2, fmt.Sprintf("%02X:%02X (%04X)", reg[cs], reg[ip], physAddr), styleValue)
+
+				drawString(screen, dbgX+2, dbgY+4, fmt.Sprintf("AX:%02X BX:%02X CX:%02X DX:%02X SP:%02X BP:%02X DI:%02X FL:%02X",
+					reg[ax], reg[bx], reg[cx], reg[dx], reg[sp], reg[bp], reg[di], reg[flag]), styleValue)
+				drawString(screen, dbgX+2, dbgY+5, fmt.Sprintf("CS:%02X DS:%02X SS:%02X IP:%02X",
+					reg[cs], reg[ds], reg[ss], reg[ip]), styleValue)
+
+				drawString(screen, dbgX+2, dbgY+7, "Code Dump:", styleLabel)
+				baseAddr := uint(reg[cs])*0x100 + uint(reg[ip])
+				dumpLine := ""
+				for i := 0; i < 4; i++ {
+					addr := baseAddr + uint(i*4)
+					b := make([]byte, 4)
+					for j := 0; j < 4; j++ {
+						a := addr + uint(j)
+						if a < uint(len(mem)) {
+							b[j] = mem[a]
+						}
+					}
+					dumpLine += fmt.Sprintf(" %04X:%02X%02X%02X%02X", addr&0xFFFF, b[0], b[1], b[2], b[3])
+				}
+				drawString(screen, dbgX+13, dbgY+7, dumpLine, styleNormal)
+			}
+
+			screen.Show()
+		}
+
+		for i := 0; i < batch; i++ {
+			if !halting {
+				tick()
+			}
+			floppyTick()
+			keyTick()
+			timerTick()
+			interrupt()
+
+			// halting中は命令フェッチもPC更新もしない。interrupt()が割り込みを
+			// ディスパッチした場合は halting が解除されているので、advancePC()で
+			// ハンドラ先頭に着地する(setNext同様、末尾のadvancePCで補正)。
+			if !halting {
+				advancePC()
 			}
 		}
-
-		// 2. Draw Debug Panel
-		dbgW := 34
-		dbgH := 18
-		if !useLayout {
-			dbgW = 66
-			dbgH = 11
-		}
-
-		drawBox(screen, dbgX, dbgY, dbgW, dbgH, "CPU DEBUG STATUS", styleBorder, styleTitle)
-
-		if useLayout {
-			// Side-by-Side Layout
-			drawString(screen, dbgX+2, dbgY+2, "Time:", styleLabel)
-			drawString(screen, dbgX+8, dbgY+2, now.Format("15:04:05"), styleValue)
-			drawString(screen, dbgX+18, dbgY+2, "Freq:", styleLabel)
-			drawString(screen, dbgX+24, dbgY+2, fmt.Sprintf("%.2fHz", freq), styleValue)
-
-			drawString(screen, dbgX+2, dbgY+4, "Registers:", styleLabel)
-			drawString(screen, dbgX+3, dbgY+5, fmt.Sprintf("AX: %02X  BX: %02X  CX: %02X  DX: %02X", reg[ax], reg[bx], reg[cx], reg[dx]), styleValue)
-			drawString(screen, dbgX+3, dbgY+6, fmt.Sprintf("SP: %02X  BP: %02X  DI: %02X  FL: %02X", reg[sp], reg[bp], reg[di], reg[flag]), styleValue)
-			drawString(screen, dbgX+3, dbgY+7, fmt.Sprintf("CS: %02X  DS: %02X  SS: %02X  IP: %02X", reg[cs], reg[ds], reg[ss], reg[ip]), styleValue)
-
-			physAddr := uint(reg[cs])*0x100 + uint(reg[ip])
-			drawString(screen, dbgX+2, dbgY+9, "CS:IP (Phys):", styleLabel)
-			drawString(screen, dbgX+16, dbgY+9, fmt.Sprintf("%02X:%02X (%04X)", reg[cs], reg[ip], physAddr), styleValue)
-
-			drawString(screen, dbgX+2, dbgY+11, "Code Dump (CS:IP):", styleLabel)
-			baseAddr := uint(reg[cs])*0x100 + uint(reg[ip])
-			for i := 0; i < 4; i++ {
-				addr := baseAddr + uint(i*4)
-				b := make([]byte, 4)
-				for j := 0; j < 4; j++ {
-					a := addr + uint(j)
-					if a < uint(len(mem)) {
-						b[j] = mem[a]
-					}
-				}
-				dumpStr := fmt.Sprintf(" %04X: %02X %02X %02X %02X", addr&0xFFFF, b[0], b[1], b[2], b[3])
-				drawString(screen, dbgX+2, dbgY+12+i, dumpStr, styleNormal)
-			}
-		} else {
-			// Stacked Layout
-			physAddr := uint(reg[cs])*0x100 + uint(reg[ip])
-			drawString(screen, dbgX+2, dbgY+2, "Time:", styleLabel)
-			drawString(screen, dbgX+8, dbgY+2, now.Format("15:04:05"), styleValue)
-			drawString(screen, dbgX+18, dbgY+2, "Freq:", styleLabel)
-			drawString(screen, dbgX+24, dbgY+2, fmt.Sprintf("%.2fHz", freq), styleValue)
-			drawString(screen, dbgX+38, dbgY+2, "CS:IP:", styleLabel)
-			drawString(screen, dbgX+45, dbgY+2, fmt.Sprintf("%02X:%02X (%04X)", reg[cs], reg[ip], physAddr), styleValue)
-
-			drawString(screen, dbgX+2, dbgY+4, fmt.Sprintf("AX:%02X BX:%02X CX:%02X DX:%02X SP:%02X BP:%02X DI:%02X FL:%02X",
-				reg[ax], reg[bx], reg[cx], reg[dx], reg[sp], reg[bp], reg[di], reg[flag]), styleValue)
-			drawString(screen, dbgX+2, dbgY+5, fmt.Sprintf("CS:%02X DS:%02X SS:%02X IP:%02X",
-				reg[cs], reg[ds], reg[ss], reg[ip]), styleValue)
-
-			drawString(screen, dbgX+2, dbgY+7, "Code Dump:", styleLabel)
-			baseAddr := uint(reg[cs])*0x100 + uint(reg[ip])
-			dumpLine := ""
-			for i := 0; i < 4; i++ {
-				addr := baseAddr + uint(i*4)
-				b := make([]byte, 4)
-				for j := 0; j < 4; j++ {
-					a := addr + uint(j)
-					if a < uint(len(mem)) {
-						b[j] = mem[a]
-					}
-				}
-				dumpLine += fmt.Sprintf(" %04X:%02X%02X%02X%02X", addr&0xFFFF, b[0], b[1], b[2], b[3])
-			}
-			drawString(screen, dbgX+13, dbgY+7, dumpLine, styleNormal)
-		}
-
-		screen.Show()
-		now = time.Now()
-
-		if !halting {
-			tick()
-		}
-		floppyTick()
-		keyTick()
-		interrupt()
-
-		// halting中は命令フェッチもPC更新もしない。interrupt()が割り込みを
-		// ディスパッチした場合は halting が解除されているので、advancePC()で
-		// ハンドラ先頭に着地する(setNext同様、末尾のadvancePCで補正)。
-		if !halting {
-			advancePC()
-		}
-		time.Sleep(time.Second / time.Duration(emuFreq))
+		instrSince += batch
+		time.Sleep(time.Duration(batch) * time.Second / time.Duration(emuFreq))
 	}
 }
 
@@ -238,8 +257,14 @@ func reset() { //Resets all the data
 	reg = [12]uint8{}
 	reg[cs] = 0xff
 	mem = [MemSize]uint8{}
-	copy(mem[uint(InstLength)*0xff00/0x04:], []uint8{
-		0x01, 0x02, 0x0f, 0x01, //Bootloaderloader
+	copy(mem[uint(InstLength)*0xff00/0x04:], bootROM)
+	irq = [2]uint64{}
+	timerCount = 0
+	floppyInit()
+}
+
+var bootROM = []uint8{
+	0x01, 0x02, 0x0f, 0x01, //Bootloaderloader
 		0x01, 0x01, 0x0f, 0x80, //120byte
 		0x01, 0x09, 0x0f, 0x7c,
 		0x17, 0x10, 0x02, 0x00,
@@ -261,7 +286,7 @@ func reset() { //Resets all the data
 		0x0d, 0x03, 0x0f, 0x02, //CMP CX == 2
 		0x0f, 0x0c, 0x00, 0x00, //JZ +12
 		0x15, 0x09, 0x00, 0x00, //INC DS
-		0x0e, 0x0f, 0xd8, 0x00, //LOOPBACK -36
+		0x0e, 0x0f, 0xd8, 0x00, //LOOPBACK -40 (FLAG CLEARへ。CMP cx,2 が残すCFをクリアしないと次のINC+JCが誤発火する)
 		//512B Copy complete
 		0x01, 0x03, 0x0f, 0x03, //SET cx=3
 		0x17, 0x10, 0x03, 0x00, //RESET Floppy
@@ -271,9 +296,6 @@ func reset() { //Resets all the data
 		0x01, 0x09, 0x01, 0x00,
 		0x01, 0x0b, 0x01, 0x00, //Clear Registers
 		0x0e, 0x2f, 0x7c, 0x00, //Jump to 0x7c00
-	})
-	irq = [2]uint64{}
-	floppyInit()
 }
 
 // pc16 returns the current program counter as a 16-bit cs:ip value.
@@ -1061,6 +1083,11 @@ func decode(inst []uint8) {
 		pop([]uint8{0x00, 0x0b, 0x00, 0x00}) //POP flags
 		pop([]uint8{0x00, 0x07, 0x00, 0x00}) //POP cs
 		pop([]uint8{0x00, 0x00, 0x00, 0x00}) //POP ip
+		// ディスパッチ時にクリアされた割り込み許可を復元する。ハンドラが
+		// 手動でSTIしてからIRETすると、その間に次の割り込みが入って
+		// IRETが実行されないままスタックが伸びる競合があるため、
+		// x86のIF復元と同様にIRET自身が再有効化する。
+		statsReg |= 1
 	case 0x23:
 		//LST
 		if statsReg>>2&1 == 0 {
@@ -1086,6 +1113,21 @@ func decode(inst []uint8) {
 		//INTERRUPT 0x70
 		irq[1] |= 0x1000000000000
 		//
+	case 0x25:
+		//STS — statsReg への書き込み(👑特権命令)。
+		//bit0を立てると割り込みが有効になる(唯一の手段)。
+		if statsReg>>2&1 == 0 {
+			switch {
+			case inst[1] < 0x0c:
+				statsReg = reg[inst[1]]
+			case inst[1] == 0x0f:
+				statsReg = inst[2]
+			}
+		} else {
+			// not Privileged
+			// 0x7f
+			irq[1] |= 0x8000000000000000
+		}
 	case 0xff:
 		//HLT
 		if statsReg>>2&1 == 0 {

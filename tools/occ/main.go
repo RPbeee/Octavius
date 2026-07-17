@@ -18,8 +18,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
+
+// codeOrg is the code origin (boot load point by default; override with -org
+// for a kernel loaded elsewhere, e.g. -org 0x8000).
+var codeOrg = 0x7c00
 
 func main() {
 	in, out := "", ""
@@ -32,6 +37,16 @@ func main() {
 			}
 			i++
 			out = args[i]
+		case "-org":
+			if i+1 >= len(args) {
+				fatal("-org needs an argument")
+			}
+			i++
+			v, err := strconv.ParseInt(args[i], 0, 32)
+			if err != nil {
+				fatal("bad -org value " + args[i])
+			}
+			codeOrg = int(v)
 		default:
 			if in != "" {
 				fatal("only one input file is supported")
@@ -1443,7 +1458,6 @@ const (
 	dataSeg  = 0x10 // variables live at physical 0x1000..0x10ff (ds:imm)
 	stackSeg = 0x70 // stack at 0x7000..0x70ff
 	vramSeg  = 0xfb // video text RAM segment
-	codeOrg  = 0x7c00
 
 	// Runtime scratch occupies the top of the data segment; user variables are
 	// allocated below it. Used by the 16-bit multiply/divide helpers.

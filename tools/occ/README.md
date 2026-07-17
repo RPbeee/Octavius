@@ -25,6 +25,8 @@ go build -o oasm ./tools/oasm
 ```
 
 `occ prog.c` with no `-o` prints the assembly to stdout.
+`-org N` sets the code origin (default `0x7c00`, the boot load point) for
+programs loaded elsewhere by a custom loader, e.g. `-org 0x8000`.
 
 ## Quick start
 

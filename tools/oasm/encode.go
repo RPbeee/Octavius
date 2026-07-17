@@ -95,6 +95,19 @@ func encode(mn string, ops []operand, curAddr int) ([]uint8, error) {
 
 	case "LST":
 		return encLst(ops)
+
+	case "STS":
+		// STS src — write statsReg from a register or immediate (privileged)
+		if err := need("STS", ops, 1); err != nil {
+			return nil, err
+		}
+		switch ops[0].kind {
+		case kReg:
+			return []uint8{0x25, ops[0].regNum, 0, 0}, nil
+		case kImm:
+			return []uint8{0x25, 0x0f, b(ops[0].imm), 0}, nil
+		}
+		return nil, encErr("STS", "source must be a register or immediate")
 	}
 	return nil, fmt.Errorf("unknown mnemonic %q", mn)
 }

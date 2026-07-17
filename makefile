@@ -3,8 +3,6 @@ build: oct occ oasm
 oct:
 	go build -o build/oct .
 occ:
-	cd tools/occ
-	go build -o build/occ .
+	go build -o build/occ ./tools/occ
 oasm:
-	cd tools/oasm
-	go build -o build/oasm .
+	go build -o build/oasm ./tools/oasm
