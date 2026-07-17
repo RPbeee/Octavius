@@ -1008,22 +1008,22 @@ func decode(inst []uint8) {
 			newIP = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
 		case inst[1] == 0x1c:
 			//far mem ds
-			newIP = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx])+4, 1)[0]
-			newCS = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
+			newIP = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx]), 1)[0]
+			newCS = readMemory(uint16(reg[ds])*0x100+uint16(reg[bx])+1, 1)[0]
 		case inst[1] == 0x0d:
 			//near mem ss
 			newIP = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
 		case inst[1] == 0x1d:
 			//far mem ss
-			newIP = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp])+4, 1)[0]
-			newCS = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
+			newIP = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp]), 1)[0]
+			newCS = readMemory(uint16(reg[ss])*0x100+uint16(reg[bp])+1, 1)[0]
 		case inst[1] == 0x0e:
 			//near mem imm
 			newIP = readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0]
 		case inst[1] == 0x1e:
 			//far mem imm
-			newIP = readMemory(uint16(reg[ds])*0x100+uint16(inst[2])+4, 1)[0]
-			newCS = readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0]
+			newIP = readMemory(uint16(reg[ds])*0x100+uint16(inst[2]), 1)[0]
+			newCS = readMemory(uint16(reg[ds])*0x100+uint16(inst[2])+1, 1)[0]
 		case inst[1] == 0x0f:
 			//short imm (relative)
 			target := uint16(int(pc16()) + int(int8(inst[2])))
@@ -1041,8 +1041,8 @@ func decode(inst []uint8) {
 			newIP = readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0]
 		case inst[1] == 0xf1:
 			//far memimm2
-			newIP = readMemory(uint16(inst[2])*0x100+uint16(inst[3])+4, 1)[0]
-			newCS = readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0]
+			newIP = readMemory(uint16(inst[2])*0x100+uint16(inst[3]), 1)[0]
+			newCS = readMemory(uint16(inst[2])*0x100+uint16(inst[3])+1, 1)[0]
 		default:
 			call = false
 		}
