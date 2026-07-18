@@ -26,6 +26,11 @@ import (
 // for a kernel loaded elsewhere, e.g. -org 0x8000).
 var codeOrg = 0x7c00
 
+// stackSeg is the runtime stack segment (physical page for ss). Default 0x7000;
+// override with -sorg for a kernel that packs its stack elsewhere (e.g. an OS
+// that keeps a low, compact memory map and reserves the high pages for code).
+var stackSeg = 0x70
+
 func main() {
 	in, out := "", ""
 	args := os.Args[1:]
@@ -47,6 +52,16 @@ func main() {
 				fatal("bad -org value " + args[i])
 			}
 			codeOrg = int(v)
+		case "-sorg":
+			if i+1 >= len(args) {
+				fatal("-sorg needs an argument")
+			}
+			i++
+			v, err := strconv.ParseInt(args[i], 0, 32)
+			if err != nil {
+				fatal("bad -sorg value " + args[i])
+			}
+			stackSeg = int(v)
 		default:
 			if in != "" {
 				fatal("only one input file is supported")
@@ -1455,9 +1470,8 @@ func (p *parser) parsePrimary() *node {
 // ---------------------------------------------------------------------------
 
 const (
-	dataSeg  = 0x10 // variables live at physical 0x1000..0x10ff (ds:imm)
-	stackSeg = 0x70 // stack at 0x7000..0x70ff
-	vramSeg  = 0xfb // video text RAM segment
+	dataSeg = 0x10 // variables live at physical 0x1000..0x10ff (ds:imm)
+	vramSeg = 0xfb // video text RAM segment
 
 	// Runtime scratch occupies the top of the data segment; user variables are
 	// allocated below it. Used by the 16-bit multiply/divide helpers.
@@ -1511,6 +1525,8 @@ type generator struct {
 	frameStart map[string]int  // function -> first data-segment byte of its frame
 	frameSize  map[string]int  // function -> frame size in bytes
 	recursive  map[string]bool // function -> reachable from itself in the call graph
+	laying     bool            // true during the first-pass frame layout (skip the
+	//                            data-budget check; it is enforced after overlay)
 }
 
 // strLit is a string literal to emit as data in the code image; its label's
@@ -1543,6 +1559,21 @@ func gen(prog *program) string {
 	for _, gv := range prog.globals {
 		g.alloc(gv.name, gv.typ)
 	}
+	// Function frames (params + locals) are statically allocated in the data
+	// segment. A naive layout gives every function a disjoint range, so the
+	// total is the SUM of all frames and a big program runs out of the 240-byte
+	// segment. Instead we OVERLAY frames by the call graph: two functions that
+	// can never be live at the same time (neither calls the other, directly or
+	// transitively) may share the same bytes. Each frame is placed just above
+	// the deepest chain of callers that reaches it, so the total shrinks to the
+	// longest call path rather than the sum. (Handlers entered from asm and
+	// main() have no C caller, so their trees all root at globalBase and overlay
+	// with each other for free.)
+	globalBase := g.nextOff
+	// First pass: lay each frame out contiguously to learn its size and the
+	// byte offset of each local WITHIN the frame. The data-budget check is off
+	// here (laying); it is enforced on the overlaid total below.
+	g.laying = true
 	for _, f := range prog.funcs {
 		start := g.nextOff
 		for _, pr := range f.params {
@@ -1554,7 +1585,35 @@ func gen(prog *program) string {
 		g.frameStart[f.name] = start
 		g.frameSize[f.name] = g.nextOff - start
 	}
+	g.laying = false
 	g.computeRecursive(prog)
+
+	// Overlay pass: compute each frame's real base via a longest-path walk of
+	// the call DAG (recursive back-edges are skipped — recursion reuses a
+	// function's own slots via the save/restore in genCall), then shift every
+	// local of that function by the delta from its first-pass base.
+	overlaidStart := g.overlayFrames(prog, globalBase)
+	total := globalBase
+	for _, f := range prog.funcs {
+		ns := overlaidStart[f.name]
+		delta := ns - g.frameStart[f.name]
+		if delta != 0 {
+			pref := f.name + "::"
+			for key := range g.off {
+				if strings.HasPrefix(key, pref) {
+					g.off[key] += delta
+				}
+			}
+		}
+		g.frameStart[f.name] = ns
+		if ns+g.frameSize[f.name] > total {
+			total = ns + g.frameSize[f.name]
+		}
+	}
+	if total > rtTop {
+		fatal(fmt.Sprintf("out of data memory: overlaid locals need %d bytes, budget %d", total, rtTop))
+	}
+	g.nextOff = total
 
 	g.emit(".org 0x%x", codeOrg)
 	g.emit("")
@@ -1578,6 +1637,67 @@ func gen(prog *program) string {
 	g.genRuntime()
 	g.genStrings()
 	return g.b.String()
+}
+
+// overlayFrames computes the overlaid base offset of every function's frame.
+// Frames are placed by a longest-path walk of the call DAG: a function sits
+// just above the deepest chain of callers that can reach it, so functions on
+// disjoint call branches share bytes. Recursive back-edges are skipped (a
+// recursive call reuses the callee's own slots via save/restore in genCall), so
+// cycles do not blow the layout up. Returns f -> base offset (>= base).
+func (g *generator) overlayFrames(prog *program, base int) map[string]int {
+	callees := map[string][]string{}
+	for _, f := range prog.funcs {
+		set := map[string]bool{}
+		for _, st := range f.body {
+			g.collectCalls(st, set)
+		}
+		for c := range set {
+			if _, isFn := g.frameSize[c]; isFn {
+				callees[f.name] = append(callees[f.name], c)
+			}
+		}
+	}
+	// DFS: keep only edges that are not back-edges (target not currently on the
+	// recursion stack), and record a post-order for topological processing.
+	color := map[string]int{} // 0 white, 1 on-stack (gray), 2 done (black)
+	dag := map[string][]string{}
+	var order []string
+	var dfs func(u string)
+	dfs = func(u string) {
+		color[u] = 1
+		for _, v := range callees[u] {
+			if color[v] == 1 {
+				continue // back-edge into a live cycle: recursion handles it
+			}
+			dag[u] = append(dag[u], v)
+			if color[u] == 1 && color[v] == 0 {
+				dfs(v)
+			}
+		}
+		color[u] = 2
+		order = append(order, u)
+	}
+	for _, f := range prog.funcs {
+		if color[f.name] == 0 {
+			dfs(f.name)
+		}
+	}
+	// Longest path: process in reverse post-order (topological), relaxing each
+	// edge u -> v so v sits above u's whole frame.
+	start := map[string]int{}
+	for _, f := range prog.funcs {
+		start[f.name] = base
+	}
+	for i := len(order) - 1; i >= 0; i-- {
+		u := order[i]
+		for _, v := range dag[u] {
+			if cand := start[u] + g.frameSize[u]; cand > start[v] {
+				start[v] = cand
+			}
+		}
+	}
+	return start
 }
 
 // computeRecursive marks every function that can reach itself in the call graph
@@ -1974,7 +2094,7 @@ func (g *generator) alloc(name string, t *ctype) {
 		return
 	}
 	width := sizeOf(t)
-	if g.nextOff+width > rtTop {
+	if !g.laying && g.nextOff+width > rtTop {
 		fatal("out of data memory (too many variables)")
 	}
 	g.off[name] = g.nextOff
@@ -2884,6 +3004,48 @@ func (g *generator) genCall(e *node) {
 			g.emit("POP ax") // value back in ax
 			g.emit("OUT bx, ax")
 		}
+		return
+	}
+	// Built-in: __diskcmd(cmd, c, h, s) submits a floppy command + C/H/S to the
+	// controller. The floppy ARG port has no handshake: floppyTick() samples it
+	// once per CPU tick while CMD is READ/WRITE, so C/H/S must be delivered as
+	// three OUT instructions with NOTHING between them (an intervening MOV would
+	// let the previous ARG be re-sampled — floppy.md §3). occ's __out expands to
+	// several instructions, so this cannot be written as three __out calls; this
+	// builtin is the one hand-emitted burst. Each of C/H/S gets its MSB set (the
+	// controller strips it) so a zero cylinder/head/sector is still seen as a
+	// non-zero ARG. cmd is 1=READ, 2=WRITE. Evaluates to nothing (void).
+	if e.name == "__diskcmd" {
+		if len(e.args) != 4 {
+			fatal(fmt.Sprintf("line %d: __diskcmd expects (cmd, c, h, s)", e.line))
+		}
+		g.genExpr(e.args[3], "") // s
+		g.emit("OR ax, 0x80")
+		g.emit("PUSH ax")
+		g.genExpr(e.args[2], "") // h
+		g.emit("OR ax, 0x80")
+		g.emit("PUSH ax")
+		g.genExpr(e.args[1], "") // c
+		g.emit("OR ax, 0x80")
+		g.emit("PUSH ax")
+		g.genExpr(e.args[0], "") // cmd
+		g.emit("PUSH ax")
+		// RESET the controller (clears args/headbyte/status) then park ARG=0 so
+		// the tick that sets CMD does not sample a stale ARG as a phantom C.
+		g.emit("MOV bx, 3")
+		g.emit("OUT 0x10, bx")
+		g.emit("MOV bx, 0")
+		g.emit("OUT 0x11, bx")
+		g.emit("POP ax") // cmd
+		g.emit("POP bx") // c|0x80
+		g.emit("POP cx") // h|0x80
+		g.emit("POP di") // s|0x80
+		// The burst: four consecutive OUTs, one CPU tick each, so floppyTick
+		// samples exactly cmd, C, H, S on successive ticks.
+		g.emit("OUT 0x10, ax") // CMD
+		g.emit("OUT 0x11, bx") // ARG = C
+		g.emit("OUT 0x11, cx") // ARG = H
+		g.emit("OUT 0x11, di") // ARG = S
 		return
 	}
 	// Built-in: __syscall(n, arg) raises software interrupt 0x70 with the call

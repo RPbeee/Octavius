@@ -39,7 +39,9 @@ func floppyTick() {
 		}
 		if len(args) == 3 && waitTime == 0 {
 			ioport[floppy_STAT] |= 0x02
-			ioport[floppy_DATA] = floppy_map[(((args[0]*2+args[1])*18+args[2])*512)+headbyte]
+			if headbyte < 512 { // guard: headbyte may sit at 512 after the last byte
+				ioport[floppy_DATA] = floppy_map[(((args[0]*2+args[1])*18+args[2])*512)+headbyte]
+			}
 		}
 	case 0x02:
 		// WRITE
@@ -67,7 +69,7 @@ func floppyTick() {
 }
 
 func updateFloppyIO() {
-	if len(args) == 3 && waitTime == 0 && headbyte < 511 {
+	if len(args) == 3 && waitTime == 0 && headbyte < 512 { // full 512-byte sector
 		if ioport[floppy_CMD] == 0x02 {
 			floppy_map[(((args[0]*2+args[1])*18+args[2])*512)+headbyte] = ioport[floppy_DATA]
 		}

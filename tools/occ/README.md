@@ -27,6 +27,9 @@ go build -o oasm ./tools/oasm
 `occ prog.c` with no `-o` prints the assembly to stdout.
 `-org N` sets the code origin (default `0x7c00`, the boot load point) for
 programs loaded elsewhere by a custom loader, e.g. `-org 0x8000`.
+`-sorg N` sets the runtime **stack** segment (default `0x70` → `ss=0x70`) for
+programs that keep a compact low memory map and want the high pages free for
+code, e.g. `-sorg 0x05` (OctOS packs its stack at `0x0500`).
 
 ## Quick start
 
@@ -119,6 +122,15 @@ void main() {
   - A **function name used as a value** (not called) evaluates to its 16-bit
     linear address — for spawn-style APIs, e.g. `__syscall(SYS_SPAWN, task_e)`.
     There are no callable function pointers.
+  - `__diskcmd(cmd, c, h, s)` submits a floppy command + cylinder/head/sector to
+    the disk controller as one hand-emitted burst: `RESET; ARG=0; OUT CMD;
+    OUT ARG,c; OUT ARG,h; OUT ARG,s` with no instructions in between (each C/H/S
+    gets its MSB set so a zero value still reads as a non-zero ARG). The floppy
+    ARG port has no handshake — it is re-sampled every CPU tick while a command
+    is active — so three separate `__out` calls would duplicate values; this
+    builtin is the one thing the driver can't express as ordinary `__out`s.
+    `cmd` is 1=READ, 2=WRITE. Evaluates to nothing. Streaming the 512 data bytes
+    and polling `STAT` are then plain `__in`/`__out` in ordinary code.
   - `__out(port, value)` writes the low byte of `value` to I/O `port`, and
     `__in(port)` reads a byte from `port` (zero-extended to 16-bit). A constant
     `port` uses the immediate instruction form. These are the raw `OUT`/`IN`
@@ -199,8 +211,17 @@ These come from the hardware, and are the natural next things to add:
 - Values are computed as **16 bits** in `ax` (low) : `dx` (high). `char` is a
   1-byte store/1-byte zero-extended load.
 - Variables are statically allocated in data segment `0x10` (`ds:imm`); the
-  16-bit math helpers use scratch at `0xf0`–`0xff`.
-- The stack is at `ss=0x70`, `sp=0xff`; `CALL`/`RET` and expression temporaries
+  16-bit math helpers use scratch at `0xf0`–`0xff`. There is no runtime stack
+  frame for locals, so all functions' locals must fit in the 240-byte segment
+  below the scratch. To make that budget go far, occ **overlays** frames by the
+  call graph: two functions that can never be live simultaneously (neither
+  reaches the other) share the same bytes. Each frame is placed just above the
+  deepest chain of callers that can reach it (a longest-path walk of the call
+  DAG; recursive back-edges are skipped and handled by the save/restore below),
+  so the total is the longest call path, not the sum of all frames. Functions
+  entered only from asm (interrupt handlers) and `main` root at the base and
+  overlay with each other. Overflow is reported as "out of data memory".
+- The stack is at `ss=0x70` (overridable with `-sorg`), `sp=0xff`; `CALL`/`RET` and expression temporaries
   use it (each 16-bit temporary is two 1-byte pushes). A call to a recursive
   function also pushes that function's frame bytes (`PUSH [addr]`) before the
   call and pops them back (`POP [addr]`) after, so a nested activation can reuse
